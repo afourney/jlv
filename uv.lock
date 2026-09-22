@@ -4,14 +4,14 @@ requires-python = ">=3.12"
 
 [[package]]
 name = "jlv"
-version = "0.1.0"
+version = "0.0.1"
 source = { editable = "." }
 dependencies = [
     { name = "textual" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "textual", specifier = ">=3.0.0" }]
+requires-dist = [{ name = "textual", specifier = ">=8.0.0" }]
 
 [[package]]
 name = "linkify-it-py"

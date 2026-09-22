@@ -1,13 +1,13 @@
 [project]
 name = "jlv"
-version = "0.1.0"
-description = "Add your description here"
+version = "0.0.1"
+description = "A terminal viewer for JSONL files"
 readme = "README.md"
 authors = [
-    { name = "Adam Fourney", email = "adamfo@microsoft.com" }
+    { name = "Adam Fourney", email = "adam.fourney@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = ["textual>=3.0.0"]
+dependencies = ["textual>=8.0.0"]
 
 [project.scripts]
 jlv = "jlv:main"
