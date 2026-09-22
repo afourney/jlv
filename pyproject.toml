@@ -1,5 +1,5 @@
 [project]
-name = "jlv"
+name = "jsonl-viewer"
 version = "0.0.1"
 description = "A terminal viewer for JSONL files"
 readme = "README.md"
@@ -12,6 +12,14 @@ dependencies = ["textual>=8.0.0"]
 [project.scripts]
 jlv = "jlv:main"
 
+[project.urls]
+Homepage = "https://github.com/afourney/jlv"
+Repository = "https://github.com/afourney/jlv"
+Issues = "https://github.com/afourney/jlv/issues"
+
 [build-system]
 requires = ["uv_build>=0.10.2,<0.11.0"]
 build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "jlv"

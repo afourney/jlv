@@ -1,0 +1,101 @@
+name: release
+
+# Push v0.0.1 to publish version 0.0.1. Manual runs only build and validate.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check the tag matches the project version
+        if: github.event_name == 'push'
+        run: |
+          version=$(uv version --short)
+          tag=${GITHUB_REF_NAME#v}
+          if [ "$version" != "$tag" ]; then
+            echo "::error::Tag $tag does not match pyproject.toml version $version"
+            exit 1
+          fi
+
+      - run: uv lock --check
+      - run: uv build --out-dir dist
+
+      - name: Check the distribution and CLI entry point
+        run: |
+          uv run --no-project python - <<'PY'
+          import configparser
+          import email
+          import pathlib
+          import zipfile
+
+          wheels = list(pathlib.Path("dist").glob("*.whl"))
+          sdists = list(pathlib.Path("dist").glob("*.tar.gz"))
+          assert len(wheels) == len(sdists) == 1, "Expected one wheel and one source distribution"
+          assert all(path.name.startswith("jsonl_viewer-") for path in wheels + sdists)
+          with zipfile.ZipFile(wheels[0]) as wheel:
+              for module in ("jlv/__init__.py", "jlv/rows.py", "jlv/source.py"):
+                  assert module in wheel.namelist(), f"Missing module: {module}"
+              metadata_path = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
+              metadata = email.message_from_bytes(wheel.read(metadata_path))
+              assert metadata["Name"] == "jsonl-viewer", metadata["Name"]
+              entry_path = next(name for name in wheel.namelist() if name.endswith(".dist-info/entry_points.txt"))
+              entries = configparser.ConfigParser()
+              entries.read_string(wheel.read(entry_path).decode())
+              assert entries["console_scripts"]["jlv"] == "jlv:main"
+          PY
+
+      - name: Check the metadata renders on PyPI
+        run: uvx twine check --strict dist/*
+
+      - name: Smoke test the installed wheel
+        run: |
+          uv venv "${RUNNER_TEMP}/jlv-release"
+          uv pip install --python "${RUNNER_TEMP}/jlv-release/bin/python" dist/*.whl
+          "${RUNNER_TEMP}/jlv-release/bin/python" - <<'PY'
+          import importlib.metadata
+          import pathlib
+          import subprocess
+          import sys
+
+          assert importlib.metadata.metadata("jsonl-viewer")["Name"] == "jsonl-viewer"
+          result = subprocess.run(
+              [str(pathlib.Path(sys.executable).with_name("jlv"))],
+              capture_output=True, text=True, timeout=10,
+          )
+          assert result.returncode == 1, result
+          assert result.stderr.strip() == "Usage: jlv <file.jsonl>", result.stderr
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/project/jsonl-viewer/
+    permissions:
+      actions: read
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

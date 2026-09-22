@@ -2,6 +2,15 @@
 
 A terminal viewer for JSONL files (one JSON value per line).
 
+Install the `jsonl-viewer` package; the command is still `jlv`:
+
+```bash
+uv tool install jsonl-viewer
+jlv your-file.jsonl
+```
+
+Alternatively, use `pip install jsonl-viewer`. From a source checkout:
+
 ```bash
 uv run jlv your-file.jsonl
 ```
@@ -14,11 +23,11 @@ to read its decoded contents in a scrollable, word-wrapped inspector.
 
 Browse records alongside their formatted JSON:
 
-![JSONL records in the left panel and the selected record's formatted JSON in the right panel](docs/imgs/jlv_main_ui.png)
+![JSONL records in the left panel and the selected record's formatted JSON in the right panel](https://raw.githubusercontent.com/afourney/jlv/main/docs/imgs/jlv_main_ui.png)
 
 Open a string to read its decoded, word-wrapped contents:
 
-![String inspector showing decoded multi-paragraph text in a scrollable window](docs/imgs/jlv_string_window.png)
+![String inspector showing decoded multi-paragraph text in a scrollable window](https://raw.githubusercontent.com/afourney/jlv/main/docs/imgs/jlv_string_window.png)
 
 ## Controls
 
