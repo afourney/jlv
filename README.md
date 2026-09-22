@@ -2,6 +2,8 @@
 
 A terminal viewer for JSONL files (one JSON value per line).
 
+https://github.com/user-attachments/assets/5e47dbae-dd43-408b-b65d-e8e98aeeba17
+
 Install the `jsonl-viewer` package; the command is still `jlv`:
 
 ```bash
