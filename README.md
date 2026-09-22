@@ -10,6 +10,16 @@ Requires Python 3.12+ and Textual 8+. The left panel lists numbered records;
 the right panel shows the selected record as indented JSON. Select a string
 to read its decoded contents in a scrollable, word-wrapped inspector.
 
+## Screenshots
+
+Browse records alongside their formatted JSON:
+
+![JSONL records in the left panel and the selected record's formatted JSON in the right panel](docs/imgs/jlv_main_ui.png)
+
+Open a string to read its decoded, word-wrapped contents:
+
+![String inspector showing decoded multi-paragraph text in a scrollable window](docs/imgs/jlv_string_window.png)
+
 ## Controls
 
 | Key / action | Effect |
