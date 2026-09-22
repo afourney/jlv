@@ -44,7 +44,7 @@ jobs:
           assert len(wheels) == len(sdists) == 1, "Expected one wheel and one source distribution"
           assert all(path.name.startswith("jsonl_viewer-") for path in wheels + sdists)
           with zipfile.ZipFile(wheels[0]) as wheel:
-              for module in ("jlv/__init__.py", "jlv/rows.py", "jlv/source.py"):
+              for module in ("jlv/__init__.py", "jlv/rows.py", "jlv/source.py", "jlv/search.py"):
                   assert module in wheel.namelist(), f"Missing module: {module}"
               metadata_path = next(name for name in wheel.namelist() if name.endswith(".dist-info/METADATA"))
               metadata = email.message_from_bytes(wheel.read(metadata_path))

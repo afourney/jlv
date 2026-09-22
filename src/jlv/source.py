@@ -10,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import Iterator
 from pathlib import Path
 from typing import BinaryIO
+from threading import Lock
 
 from rich.cells import cell_len
 
@@ -19,6 +20,7 @@ class JsonlFile:
 
     def __init__(self, path: str | Path) -> None:
         self._file: BinaryIO = open(path, "rb", buffering=1024 * 1024)
+        self._read_lock = Lock()
         self._previews: OrderedDict[int, str] = OrderedDict()
         self.offsets = array("Q", [0])
         self.preview_width = 0
@@ -77,11 +79,12 @@ class JsonlFile:
     def raw(self, index: int) -> str:
         if not 0 <= index < len(self):
             raise IndexError(index)
-        if self._file.closed:
-            raise ValueError("file is closed")
         start, end = self.offsets[index:index + 2]
-        self._file.seek(start)
-        raw = self._file.read(end - start)
+        with self._read_lock:
+            if self._file.closed:
+                raise ValueError("file is closed")
+            self._file.seek(start)
+            raw = self._file.read(end - start)
         if len(raw) != end - start:
             raise ValueError("file was truncated while viewing; reopen it")
         return raw.decode("utf-8")
@@ -100,7 +103,8 @@ class JsonlFile:
         return text
 
     def close(self) -> None:
-        self._file.close()
+        with self._read_lock:
+            self._file.close()
         self._previews.clear()
 
     def __enter__(self) -> JsonlFile:
