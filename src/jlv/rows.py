@@ -5,6 +5,7 @@ from collections.abc import Callable
 
 from rich.cells import cell_len
 from rich.segment import Segment
+from rich.style import Style
 from textual import events
 from textual.binding import Binding
 from textual.geometry import Offset, Region, Size
@@ -13,6 +14,19 @@ from textual.reactive import reactive
 from textual.scroll_view import ScrollView
 from textual.selection import Selection
 from textual.strip import Strip
+from textual.widget import Widget
+
+
+class PanelKey(Message):
+    """Forward navigation keys without intercepting text-entry widgets."""
+
+    def __init__(self, panel: Widget, event: events.Key) -> None:
+        self.panel = panel
+        self.character = event.character
+        super().__init__()
+        if event.character in {"h", "j", "k", "l", "g", "G", "0", "$", ":", "/", "?", "n", "N", "[", "]", "%"}:
+            event.stop()
+            event.prevent_default()
 
 
 class RowView(ScrollView, can_focus=True):
@@ -34,7 +48,9 @@ class RowView(ScrollView, can_focus=True):
         scrollbar-size: 1 1;
     }
     RowView > .rowview--highlight {
-        background: $boost;
+        background: $accent;
+        color: $text;
+        text-style: bold;
     }
     RowView:focus > .rowview--highlight {
         background: $accent;
@@ -59,6 +75,7 @@ class RowView(ScrollView, can_focus=True):
     def __init__(self, *, id: str) -> None:
         super().__init__(id=id)
         self.row_count = 0
+        self.find_selection: Selection | None = None
         self._line: Callable[[int], str] = lambda index: ""
         self._unicode_cache: OrderedDict[tuple[int, int, int], tuple[Strip, int]] = OrderedDict()
 
@@ -69,6 +86,7 @@ class RowView(ScrollView, can_focus=True):
                 if widget is not self
             }
         self.row_count = count
+        self.find_selection = None
         self._line = line
         self._unicode_cache.clear()
         self.virtual_size = Size(width, count)
@@ -117,22 +135,45 @@ class RowView(ScrollView, can_focus=True):
             self._unicode_cache.move_to_end(key)
             strip, character_offset = self._unicode_cache[key]
         strip = strip.apply_style(style)
-        if self.text_selection is not None:
-            span = self.text_selection.get_span(row)
+        for selection, selection_style in (
+            (self.find_selection, Style(color="#000000", bgcolor="#ffff00", bold=True)),
+            (self.text_selection, self.screen.get_component_rich_style("screen--selection")),
+        ):
+            if selection is None:
+                continue
+            span = selection.get_span(row)
             if span is not None:
                 start, end = span
+                empty_match = selection is self.find_selection and start == end
                 start = min(start, len(text)) if single_cell else cell_len(text[:start])
                 end = len(text) if end == -1 else end
                 end = min(end, len(text)) if single_cell else cell_len(text[:end])
+                if empty_match:
+                    end = start + 1
                 start, end = max(0, start - x), min(width, end - x)
                 if start < end:
                     before, selected, after = strip.divide([start, end, width])
                     strip = Strip.join([
                         before,
-                        selected.apply_style(self.screen.get_component_rich_style("screen--selection")),
+                        Strip(
+                            Segment.apply_style(selected, post_style=selection_style),
+                            selected.cell_length,
+                        ),
                         after,
                     ])
         return strip.apply_offsets(character_offset, row)
+
+    def show_match(self, start: Offset, end: Offset) -> None:
+        self.find_selection = Selection(start, end)
+        self.index = start.y
+        line = self._line(start.y)
+        x = cell_len(line[:start.x])
+        end_x = cell_len(line[:end.x]) if end.y == start.y else cell_len(line)
+        width = max(1, min(end_x - x, self.scrollable_content_region.width))
+        if self.virtual_size.width < x + width:
+            self.virtual_size = Size(x + width, self.row_count)
+        self.scroll_to_region(Region(x, start.y, width, 1), animate=False, force=True)
+        self.refresh()
 
     def get_selection(self, selection: Selection) -> tuple[str, str]:
         start = selection.start or Offset(0, 0)
@@ -152,6 +193,20 @@ class RowView(ScrollView, can_focus=True):
 
     def on_focus(self) -> None:
         self.refresh_line(self.index)
+
+    def on_key(self, event: events.Key) -> None:
+        self.post_message(PanelKey(self, event))
+
+    def go_to_line(self, index: int) -> None:
+        self.index = index
+        self.scroll_to_region(
+            Region(0, self.index, 1, 1), animate=False, x_axis=False, force=True
+        )
+
+    def line_edge(self, end: bool) -> None:
+        width = cell_len(self._line(self.index)) if self.row_count else 0
+        x = max(0, width - self.scrollable_content_region.width) if end else 0
+        self.scroll_to(x=x, animate=False)
 
     def on_blur(self) -> None:
         self.refresh_line(self.index)

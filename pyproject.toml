@@ -7,7 +7,7 @@ authors = [
     { name = "Adam Fourney", email = "adam.fourney@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = ["textual>=8.0.0"]
+dependencies = ["textual>=8.0.0", "regex>=2024.11.6"]
 
 [project.scripts]
 jlv = "jlv:main"

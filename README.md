@@ -35,20 +35,46 @@ Open a string to read its decoded, word-wrapped contents:
 
 | Key / action | Effect |
 | --- | --- |
-| Up / Down | Select the previous / next record or JSON line |
+| Up / Down, k / j | Select the previous / next record or line |
 | Page Up / Page Down | Move by a page |
-| Home / End | Move to the first / last row |
+| Home / End, gg / G | Move to the first / last row |
 | Tab / Shift+Tab | Switch panels |
-| Left / Right | Scroll horizontally |
+| Left / Right, h / l | Scroll horizontally where available |
+| 0 / $ | Reveal the start / end of the current line |
+| [ / ] | Navigate object/array block starts in the JSON preview |
+| % | Jump between matching object/array delimiters in the JSON preview |
 | Enter or click | Inspect a selected string |
 | Mouse wheel / scrollbars | Scroll the panel under the pointer |
-| Escape | Close the string inspector |
-| q | Quit, including from the inspector |
+| Ctrl+F, /, ? | Open search (both / and ? search forward) |
+| Enter in search | Find next match and return focus to the panel |
+| Enter in a main panel while search is open | Close search, focus the JSON preview, and inspect its current line if it is a string |
+| F3, n | Find next match |
+| Shift+F3, N | Find previous match |
+| :number then Enter | Jump to a 1-based line in the originating panel |
+| :q then Enter | Close the string inspector, or quit from a main panel |
+| Alt+R / Alt+C | Toggle Regex / Match case while search is open |
+| Escape | Close search first, then the string inspector |
 
 The inspector is read-only and supports text selection and Ctrl+C to copy.
 The main panels also support text selection. The left-hand preview is capped
 at 1,000 characters, but the right-hand document and decoded strings are not
 truncated.
+
+## Search
+
+The main panels share one search across the full formatted JSON, including text
+beyond the left panel's truncated previews. A result selects its record on the
+left and highlights the matching text on the right, scrolling it into view.
+F3 and Shift+F3 (or `n` and `N` with a panel focused) move between individual
+matches, including matches in the same record, and wrap at either end of the
+file. Escape closes the search bar.
+
+Inside the string inspector, search is independent and limited to that decoded
+string. 
+
+Search defaults to literal, case-insensitive matching. Use Alt+R for regular
+expressions and Alt+C for case-sensitive matching; the search bar displays both
+settings. Press Enter to search after editing the query or changing an option.
 
 ## Large files
 
