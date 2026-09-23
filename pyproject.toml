@@ -1,6 +1,6 @@
 [project]
 name = "jsonl-viewer"
-version = "0.0.1"
+version = "0.0.2"
 description = "A terminal viewer for JSONL files"
 readme = "README.md"
 authors = [
