@@ -4,14 +4,30 @@ A terminal viewer for JSONL files (one JSON value per line).
 
 https://github.com/user-attachments/assets/5e47dbae-dd43-408b-b65d-e8e98aeeba17
 
-Install the `jsonl-viewer` package; the command is still `jlv`:
+Install the `jsonl-viewer` package with [uv](https://docs.astral.sh/uv/getting-started/installation/)
+or [pipx](https://pipx.pypa.io/); both manage an isolated environment for the tool.
+The command is still `jlv`:
 
 ```bash
 uv tool install jsonl-viewer
 jlv your-file.jsonl
 ```
 
-Alternatively, use `pip install jsonl-viewer`. From a source checkout:
+Alternatively, with pipx:
+
+```bash
+pipx install jsonl-viewer
+jlv your-file.jsonl
+```
+
+On Debian/Ubuntu, you can install pipx with `sudo apt install pipx`, then run
+`pipx ensurepath` and open a new terminal.
+
+If you already have a virtual environment activated, you can use
+`python -m pip install jsonl-viewer`. For a system-managed Python installation,
+use uv or pipx to avoid the `externally-managed-environment` error.
+
+From a source checkout:
 
 ```bash
 uv run jlv your-file.jsonl
