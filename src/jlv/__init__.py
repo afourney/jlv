@@ -295,7 +295,7 @@ class JlvApp(App):
 
     def action_find(self) -> None:
         self._remember_input_target()
-        self.screen.query_one(SearchBar).open()
+        self.screen.query_one(SearchBar).open(vim=False)
 
     def _remember_input_target(self) -> None:
         if isinstance(self.focused, (RowView, StringView)):
@@ -374,7 +374,8 @@ class JlvApp(App):
         elif key in {"0", "$"}:
             panel.line_edge(key == "$")
         elif key in {"/", "?"}:
-            self.action_find()
+            self._remember_input_target()
+            self.screen.query_one(SearchBar).open(vim=True)
         elif key == ":":
             self._remember_input_target()
             scope = (

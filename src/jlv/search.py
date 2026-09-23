@@ -137,6 +137,8 @@ class SearchBar(Vertical):
         self.count, self.text_at, self.origin = count, text_at, origin
         self.scope = scope
         self.regular_expression = False
+        self._vim_search = False
+        self._regex_modes = {False: False, True: True}
         self.match_case = False
         self.command_mode = False
         self._saved_query = ""
@@ -168,8 +170,14 @@ class SearchBar(Vertical):
         self._status = text
         self.query_one("#find-status", Static).update(self._status_text())
 
-    def open(self) -> None:
+    def open(self, *, vim: bool | None = None) -> None:
         self.restore_search()
+        if vim is not None:
+            self._vim_search = vim
+            regular_expression = self._regex_modes[vim]
+            if self.regular_expression != regular_expression:
+                self.regular_expression = regular_expression
+                self.reset()
         self.display = True
         self.query_one(Input).focus()
 
@@ -237,6 +245,7 @@ class SearchBar(Vertical):
 
     def toggle_regex(self) -> None:
         self.regular_expression = not self.regular_expression
+        self._regex_modes[self._vim_search] = self.regular_expression
         self.reset()
 
     def toggle_case(self) -> None:
