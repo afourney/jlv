@@ -1,6 +1,8 @@
-# jsonl-viewer (jlv)
+# JSONL Viewer (jlv)
 
-A terminal viewer for JSONL files (one JSON value per line).
+A terminal viewer for JSON Lines (JSONL/NDJSON) files.
+Browse records, search nested JSON, and inspect long strings as readable,
+word-wrapped text—useful for logs, datasets, and LLM agent traces.
 
 https://github.com/user-attachments/assets/5e47dbae-dd43-408b-b65d-e8e98aeeba17
 
