@@ -1,4 +1,4 @@
-# jlv
+# jsonl-viewer (jlv)
 
 A terminal viewer for JSONL files (one JSON value per line).
 
