@@ -15,7 +15,8 @@ from textual.containers import Horizontal, Vertical
 from textual.document._document import Selection as TextSelection
 from textual.geometry import Offset, Region
 from textual.screen import ModalScreen
-from textual.widgets import TextArea
+from textual.timer import Timer
+from textual.widgets import Static, TextArea
 
 from jlv.rows import PanelKey, RowView
 from jlv.source import JsonlFile
@@ -266,6 +267,11 @@ class JlvApp(App):
         width: 3fr;
         border-left: solid $accent;
     }
+    #index-status {
+        height: auto;
+        max-height: 3;
+        color: $text-muted;
+    }
     """
 
     def __init__(self, source: JsonlFile) -> None:
@@ -278,12 +284,26 @@ class JlvApp(App):
         self._find_focus: RowView | None = None
         self._input_target: RowView | StringView | None = None
         self._pending_g: RowView | StringView | None = None
+        self._index_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
         with Horizontal():
             yield RowView(id="lines-list")
             yield RowView(id="detail-list")
-        yield SearchBar(len(self.source), self._search_text, self._search_origin, "JSONL records")
+        status = Static("", id="index-status", markup=False)
+        status.display = not self.source.complete
+        yield status
+        yield SearchBar(
+            lambda: len(self.source), self._search_text, self._search_origin, "JSONL records",
+            unavailable=self._index_unavailable,
+        )
+
+    def _index_unavailable(self) -> str | None:
+        if self.source.error is not None:
+            return f"Indexing stopped: {self.source.error}"
+        if not self.source.complete:
+            return f"Still indexing ({len(self.source):,} records). Try again when indexing completes."
+        return None
 
     def _search_text(self, index: int) -> str:
         return json.dumps(self.source.value(index), indent=2, ensure_ascii=False)
@@ -330,12 +350,18 @@ class JlvApp(App):
         if target is None or not target.is_mounted or target.screen is not self.screen:
             event.bar.status("Focus a viewing panel before opening a command.")
             return
+        if target.id == "lines-list" and self.source.complete and target.row_count != len(self.source):
+            self._refresh_index()
         number = command[1:] if command.startswith(":") else ""
         if not number.isascii() or not number.isdecimal():
             event.bar.status("Unknown command. Use :number or :q.")
             return
         # Avoid conversion errors for arbitrarily long pasted numbers.
         if len(number) > 12 or not 1 <= int(number) <= target.row_count:
+            if target.id == "lines-list" and (len(number) > 12 or int(number) > target.row_count):
+                if reason := self._index_unavailable():
+                    event.bar.status(reason)
+                    return
             event.bar.status(f"Line must be between 1 and {target.row_count}.")
             return
         target.go_to_line(int(number) - 1)
@@ -362,7 +388,10 @@ class JlvApp(App):
             else:
                 self._pending_g = panel
         elif key == "G":
-            panel.go_to_line(panel.row_count - 1)
+            if isinstance(panel, RowView) and not panel.end_available:
+                panel.action_cursor_end()
+            else:
+                panel.go_to_line(panel.row_count - 1)
         elif key in {"j", "k"}:
             delta = 1 if key == "j" else -1
             if isinstance(panel, RowView):
@@ -454,6 +483,8 @@ class JlvApp(App):
         if not event.bar.accepts(event.hit):
             return
         hit = event.hit
+        if self.source.complete:
+            self._refresh_index()
         self.query_one("#lines-list", RowView).index = hit.record
         self._update_detail(hit.record)
         start_row, start_column = text_location(hit.text, hit.start)
@@ -472,8 +503,44 @@ class JlvApp(App):
     def on_mount(self) -> None:
         left = self.query_one("#lines-list", RowView)
         left.set_rows(len(self.source), self.source.preview_width, self.source.preview)
+        left.end_available = self.source.complete
         left.focus()
         self._update_detail(0)
+        if not self.source.complete:
+            self._index_timer = self.set_interval(0.1, self._refresh_index)
+            self._refresh_index()
+            self.call_after_refresh(self.source.start_indexing)
+
+    def _refresh_index(self) -> None:
+        screen = self.screen_stack[0]
+        left = screen.query_one("#lines-list", RowView)
+        complete, error = self.source.complete, self.source.error
+        count, width = len(self.source), self.source.preview_width
+        if left.row_count != count or left.virtual_size.width != width:
+            left.extend_rows(count, width)
+        left.end_available = complete
+        status = screen.query_one("#index-status", Static)
+        if error is not None:
+            status.update(f"Indexing stopped: {error}")
+            status.styles.color = self.get_css_variables()["error"]
+        elif complete:
+            status.display = False
+        else:
+            percent = self.source.scanned_bytes * 100 / max(1, self.source.file_size)
+            status.update(f"Indexing: {count:,} records ({percent:.0f}%)")
+        if complete or error is not None:
+            if self._index_timer is not None:
+                self._index_timer.stop()
+
+    def on_row_view_end_requested(self, event: RowView.EndRequested) -> None:
+        if reason := self._index_unavailable():
+            self.notify(reason, title="End of file unavailable", severity="warning")
+        else:
+            left = self.screen_stack[0].query_one("#lines-list", RowView)
+            left.extend_rows(len(self.source), self.source.preview_width)
+            left.end_available = True
+            left.action_cursor_end()
+        event.stop()
 
     def on_row_view_highlighted(self, event: RowView.Highlighted) -> None:
         bar = self.query_one(SearchBar)
@@ -523,9 +590,12 @@ def main() -> None:
         print("Usage: jlv <file.jsonl>", file=sys.stderr)
         sys.exit(1)
     try:
-        source = JsonlFile(sys.argv[1])
+        source = JsonlFile(sys.argv[1], eager=False)
     except (OSError, ValueError) as error:
         print(f"Error: {error}", file=sys.stderr)
         sys.exit(1)
     with source:
         JlvApp(source).run()
+    if source.error is not None:
+        print(f"Error: {source.error}", file=sys.stderr)
+        sys.exit(1)

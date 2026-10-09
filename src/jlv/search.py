@@ -128,14 +128,17 @@ class SearchBar(Vertical):
 
     def __init__(
         self,
-        count: int,
+        count: int | Callable[[], int],
         text_at: Callable[[int], str],
         origin: Callable[[], tuple[int, int]],
         scope: str,
+        *,
+        unavailable: Callable[[], str | None] | None = None,
     ) -> None:
         super().__init__(id="find-bar")
         self.count, self.text_at, self.origin = count, text_at, origin
         self.scope = scope
+        self.unavailable = unavailable
         self.regular_expression = False
         self._vim_search = False
         self._regex_modes = {False: False, True: True}
@@ -279,6 +282,9 @@ class SearchBar(Vertical):
             self.status("Enter text to find.")
             return False
         self.cancel()
+        if self.unavailable is not None and (reason := self.unavailable()):
+            self.status(reason)
+            return False
         try:
             options.compile()
         except regex.error as error:
@@ -288,12 +294,13 @@ class SearchBar(Vertical):
         self._request_origin = origin
         previous = self.hit if origin == self.applied_origin else None
         cancelled = self._cancelled = Event()
+        count = self.count() if callable(self.count) else self.count
         self.status("Searching...")
 
         async def search() -> None:
             try:
                 hit = await asyncio.to_thread(
-                    find_match, self.text_at, self.count, options,
+                    find_match, self.text_at, count, options,
                     origin, previous, backwards, cancelled,
                 )
             except asyncio.CancelledError:
