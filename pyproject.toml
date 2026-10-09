@@ -1,13 +1,17 @@
 [project]
 name = "jsonl-viewer"
-version = "0.0.2"
+version = "0.0.3"
 description = "A terminal viewer for JSONL files"
 readme = "README.md"
 authors = [
     { name = "Adam Fourney", email = "adam.fourney@gmail.com" }
 ]
 requires-python = ">=3.12"
-dependencies = ["textual>=8.0.0", "regex>=2024.11.6"]
+dependencies = [
+    "textual>=8.0.0",
+    "regex>=2024.11.6",
+    "orjson>=3.11,<4",
+]
 
 [project.scripts]
 jlv = "jlv:main"

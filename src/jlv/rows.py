@@ -72,9 +72,13 @@ class RowView(ScrollView, can_focus=True):
             self.index = index
             super().__init__()
 
+    class EndRequested(Message):
+        pass
+
     def __init__(self, *, id: str) -> None:
         super().__init__(id=id)
         self.row_count = 0
+        self.end_available = True
         self.find_selection: Selection | None = None
         self._line: Callable[[int], str] = lambda index: ""
         self._unicode_cache: OrderedDict[tuple[int, int, int], tuple[Strip, int]] = OrderedDict()
@@ -92,6 +96,12 @@ class RowView(ScrollView, can_focus=True):
         self.virtual_size = Size(width, count)
         self.index = 0
         self.scroll_to(x=0, y=0, animate=False, force=True)
+        self.refresh()
+
+    def extend_rows(self, count: int, width: int) -> None:
+        """Update the index without resetting selection or scroll position."""
+        self.row_count = count
+        self.virtual_size = Size(width, count)
         self.refresh()
 
     def validate_index(self, index: int) -> int:
@@ -240,7 +250,10 @@ class RowView(ScrollView, can_focus=True):
         self.index = 0
 
     def action_cursor_end(self) -> None:
-        self.index = self.row_count - 1
+        if self.end_available:
+            self.index = self.row_count - 1
+        else:
+            self.post_message(self.EndRequested())
 
     def action_select(self) -> None:
         if self.row_count:

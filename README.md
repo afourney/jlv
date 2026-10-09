@@ -97,16 +97,44 @@ settings. Press Enter to search after editing the query or changing an option.
 ## Large files
 
 Both main panels render only visible rows, rather than creating a widget for
-every record or JSON field. The loader validates the entire file in one buffered
-pass and builds a compact byte-offset index. Records are read and parsed on
-demand; small bounded caches retain recent previews and formatted documents.
-The string inspector also renders a viewport, and defers wrapping until its
-actual display width is known.
+every record or JSON field. The viewer opens after reading a small initial batch,
+then validates and indexes the remaining records in a background thread. A status
+line shows progress, and newly indexed records become available without resetting
+your selection or scroll position. You can navigate and inspect strings while
+indexing continues. Full-file search, End/G in the record panel, and jumps beyond
+the indexed records report that indexing must finish first; string-inspector
+search and navigation within the current record remain available.
 
-Validation still happens before the viewer opens: malformed JSON, invalid UTF-8,
-and interior blank lines are reported with a line number. Trailing blank lines
-are permitted. This is a read-only viewer, not a live file follower; do not edit
-the input file while viewing it.
+The loader uses native byte-oriented JSON validation and a compact byte-offset
+index. It decodes only short prefixes for preview measurements, preserving
+Python's JSON compatibility and diagnostics for exceptional records. Records are
+read and parsed on demand; small bounded caches retain recent previews and
+formatted documents. The string inspector also renders a viewport, and defers
+wrapping until its actual display width is known.
+
+Malformed JSON, invalid UTF-8, and interior blank lines are reported with a line
+number when encountered. An error in the initial batch prevents opening; a later
+error stops indexing and remains visible in the status line while previously
+validated records remain browsable. Exiting after such an error returns a nonzero
+status. Trailing blank lines are permitted. Quitting cancels background work.
+Indexes and previews stay in memory; the viewer does not write sidecar files or
+disk caches. Non-seekable inputs are still spooled to a temporary file before
+opening. This is a read-only viewer, not a live file follower; do not edit the
+input file while viewing it.
+
+### Measuring startup
+
+The terminal probe measures CLI invocation to the first interactive frame,
+navigation latency, and optionally completion of background indexing:
+
+```bash
+uv run python tools/terminal_startup.py stress-test.jsonl \
+  --navigation-samples 20 --wait-for-index --output /tmp/jlv-startup.json
+```
+
+The probe reads its input in place and discards terminal output. Its JSON report
+contains timings, memory usage, and file metadata, never record contents. It
+requires at least one more record than the requested navigation samples.
 
 ## Sample file
 
