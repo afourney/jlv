@@ -115,7 +115,9 @@ def main() -> None:
             module.main()
         finally:
             os.write(args.events_fd, (json.dumps([
-                "peak_rss_mib", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024,
+                "peak_rss_mib", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (
+                    1024 * 1024 if sys.platform == "darwin" else 1024
+                ),
             ]) + "\n").encode())
         return
 
