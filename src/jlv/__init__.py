@@ -698,6 +698,8 @@ class JlvApp(App):
         )
         event.bar.applied_origin = self._search_origin()
         event.bar.status(f"{'Wrapped - ' if hit.wrapped else ''}Record {hit.record + 1}")
+        # The document may have been restored without the cursor row changing.
+        self._update_hint()
 
     def on_search_bar_cleared(self, event: SearchBar.Cleared) -> None:
         view = self.query_one("#detail-list", RowView)

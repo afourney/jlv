@@ -190,6 +190,37 @@ class DecodeAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(right.size.height, height)
 
 
+class StringRecordHintTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        path = Path(self.directory.name) / "data.jsonl"
+        path.write_text(json.dumps(json.dumps({"a": "needle"})) + "\n")
+        self.source = JsonlFile(path)
+        self.addCleanup(self.source.close)
+        self.app = JlvApp(self.source)
+
+    async def test_search_restoring_row_zero_string_refreshes_hint(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            rack = self.app.query_one("#hint-rack")
+            await pilot.press("enter")
+            self.assertTrue(rack.display)
+            await pilot.press("/", *"needle", "enter")
+            bar = self.app.screen.query_one(SearchBar)
+            while bar.searching:
+                await pilot.pause()
+            await pilot.pause()
+            await pilot.press(">")
+            self.assertFalse(rack.display)
+            # The match is on row 0 of the restored record, where the cursor already is.
+            await pilot.press("n")
+            while bar.searching:
+                await pilot.pause()
+            await pilot.pause()
+            self.assertEqual(self.app._decoded, [])
+            self.assertEqual(self.app.query_one("#detail-list", RowView).index, 0)
+            self.assertTrue(rack.display)
+
 class EscapeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
         self.directory = tempfile.TemporaryDirectory()
