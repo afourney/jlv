@@ -36,7 +36,9 @@ uv run jlv your-file.jsonl
 ```
 
 Requires Python 3.12+ and Textual 8+. The left panel lists numbered records;
-the right panel shows the selected record as indented JSON. Select a string
+the right panel shows the selected record as indented JSON. The focused panel
+shows a bright row highlight; the record list keeps a dimmed highlight on the
+selected record while the JSON preview has focus. Select a string
 to read its decoded contents in a scrollable, word-wrapped inspector.
 
 ## Screenshots
@@ -61,7 +63,9 @@ Open a string to read its decoded, word-wrapped contents:
 | 0 / $ | Reveal the start / end of the current line |
 | [ / ] | Navigate object/array block starts in the JSON preview |
 | % | Jump between matching object/array delimiters in the JSON preview |
-| Enter or click | Inspect a selected string |
+| Enter | Drill down: from the record list into the JSON preview, then into a selected string |
+| Click | Select a record, or inspect a string in the JSON preview |
+| > / < | Decode a JSON-encoded string in place (JSON preview or string inspector) / undo the last decode |
 | Mouse wheel / scrollbars | Scroll the panel under the pointer |
 | Ctrl+F, /, ? | Open search (both / and ? search forward) |
 | Enter in search | Find next match and return focus to the panel |
@@ -71,7 +75,7 @@ Open a string to read its decoded, word-wrapped contents:
 | :number then Enter | Jump to a 1-based line in the originating panel |
 | :q then Enter | Close the string inspector, or quit from a main panel |
 | Alt+R / Alt+C | Toggle Regex / Match case while search is open |
-| Escape | Close search first, then the string inspector |
+| Escape | Back out one level: close search, then the string inspector, then move from the JSON preview to the record list |
 
 The inspector is read-only and supports text selection and Ctrl+C to copy.
 The main panels also support text selection. The left-hand preview is capped
@@ -93,6 +97,24 @@ string.
 Search defaults to literal, case-insensitive matching. Use Alt+R for regular
 expressions and Alt+C for case-sensitive matching; the search bar displays both
 settings. Press Enter to search after editing the query or changing an option.
+
+## Encoded JSON strings
+
+Some JSONL files store JSON inside string values, sometimes encoded more than
+once. When the selected string in the JSON preview holds encoded JSON, a hint in
+the bottom-right corner says so. Press `>` to show its decoded value in place,
+and `>` again to decode another layer; press `<` to undo one decode. Only strings
+that decode to an object, array, or another string are expanded; anything else
+rings the bell. Decoding is view-only: changing records or jumping to a search
+result restores the original record, and search always runs against the
+original text.
+
+The string inspector supports the same keys, and its bottom border shows which
+apply. `>` replaces the string with its decoded text, or with pretty-printed JSON
+once it decodes to an object or array, and `<` undoes it. Once it shows JSON,
+each further `>` decodes every string at any depth that holds encoded JSON, by
+one layer, ringing the bell only when none do. The inspector's search covers
+whatever it currently shows.
 
 ## Large files
 

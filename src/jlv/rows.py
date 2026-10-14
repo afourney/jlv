@@ -24,7 +24,9 @@ class PanelKey(Message):
         self.panel = panel
         self.character = event.character
         super().__init__()
-        if event.character in {"h", "j", "k", "l", "g", "G", "0", "$", ":", "/", "?", "n", "N", "[", "]", "%"}:
+        if event.character in {
+            "h", "j", "k", "l", "g", "G", "0", "$", ":", "/", "?", "n", "N", "[", "]", "%", ">", "<",
+        }:
             event.stop()
             event.prevent_default()
 
@@ -67,9 +69,10 @@ class RowView(ScrollView, can_focus=True):
             super().__init__()
 
     class Selected(Message):
-        def __init__(self, view: RowView, index: int) -> None:
+        def __init__(self, view: RowView, index: int, *, click: bool = False) -> None:
             self.view = view
             self.index = index
+            self.click = click
             super().__init__()
 
     class EndRequested(Message):
@@ -231,7 +234,7 @@ class RowView(ScrollView, can_focus=True):
         if 0 <= row < self.row_count:
             self.focus()
             self.index = row
-            self.post_message(self.Selected(self, row))
+            self.post_message(self.Selected(self, row, click=True))
             event.stop()
 
     def action_cursor_up(self) -> None:

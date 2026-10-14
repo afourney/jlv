@@ -4,16 +4,17 @@ import json
 import sys
 from collections import OrderedDict
 from bisect import bisect_left, bisect_right
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from rich.cells import cell_len
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual import events
 from textual.binding import Binding
-from textual.containers import Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical
 from textual.document._document import Selection as TextSelection
 from textual.geometry import Offset, Region
+from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Static, TextArea
@@ -23,12 +24,43 @@ from jlv.source import JsonlFile
 from jlv.search import SearchBar, text_location
 
 
+def decode_json(text: str) -> object | None:
+    """Decode a JSON-encoded string to an object, array, or string; otherwise None."""
+    stripped = text.strip()
+    # Skip parsing plain text: objects, arrays, and strings start and end with these.
+    if len(stripped) < 2 or stripped[0] not in "{[\"" or stripped[-1] not in "}]\"":
+        return None
+    try:
+        decoded = json.loads(stripped)
+    except (ValueError, RecursionError):
+        return None
+    # Scalars such as "42" or "null" are valid JSON but rarely encoded on purpose.
+    return decoded if isinstance(decoded, (dict, list, str)) else None
+
+
+def decode_nested(value: object) -> tuple[object, bool]:
+    """Decode every JSON-encoded string within ``value`` by one layer; report any change."""
+    if isinstance(value, str):
+        decoded = decode_json(value)
+        return (value, False) if decoded is None else (decoded, True)
+    if isinstance(value, dict):
+        items = {key: decode_nested(child) for key, child in value.items()}
+        return {key: child for key, (child, _) in items.items()}, any(c for _, c in items.values())
+    if isinstance(value, list):
+        children = [decode_nested(child) for child in value]
+        return [child for child, _ in children], any(c for _, c in children)
+    return value, False
+
+
 @dataclass
 class PrettyDocument:
     lines: list[tuple[str, str | None]]
     strings: dict[int, str]
     width: int
     blocks: list[tuple[int, int]]
+    value: object = None
+    paths: dict[int, tuple[str | int, ...]] = field(default_factory=dict)
+    _expandable: dict[int, bool] = field(default_factory=dict, repr=False, compare=False)
 
     def block_start(self, row: int, forward: bool) -> int:
         starts = [start for start, _ in self.blocks]
@@ -50,9 +82,13 @@ class PrettyDocument:
     def from_value(cls, value: object) -> PrettyDocument:
         lines: list[tuple[str, str | None]] = []
         strings: dict[int, str] = {}
+        paths: dict[int, tuple[str | int, ...]] = {}
         blocks: list[tuple[int, int]] = []
 
-        def append(value: object, depth: int, prefix: str = "", suffix: str = "") -> None:
+        def append(
+            value: object, depth: int, prefix: str = "", suffix: str = "",
+            path: tuple[str | int, ...] = (),
+        ) -> None:
             indent = "  " * depth
             block_index = len(blocks)
             block_start = len(lines)
@@ -64,13 +100,17 @@ class PrettyDocument:
                 entries = value.items() if isinstance(value, dict) else enumerate(value)
                 for i, (key, child) in enumerate(entries):
                     child_prefix = json.dumps(key, ensure_ascii=False) + ": " if isinstance(value, dict) else ""
-                    append(child, depth + 1, child_prefix, "," if i < len(value) - 1 else "")
+                    append(
+                        child, depth + 1, child_prefix, "," if i < len(value) - 1 else "",
+                        (*path, key),
+                    )
                 lines.append((indent + closing + suffix, None))
             else:
                 kind = None
                 if isinstance(value, str):
                     kind = "string"
                     strings[len(lines)] = value
+                    paths[len(lines)] = path
                 elif value is None:
                     kind = "null"
                 elif isinstance(value, bool):
@@ -88,8 +128,33 @@ class PrettyDocument:
                 len(line) if line.isascii() and "\x7f" not in line else cell_len(line)
                 for line, _ in lines
             ),
-            blocks,
+            blocks, value, paths,
         )
+
+    def expandable(self, row: int) -> bool:
+        """Whether ``>`` can decode the string at ``row``; cached per row."""
+        if row not in self.strings:
+            return False
+        if row not in self._expandable:
+            self._expandable[row] = decode_json(self.strings[row]) is not None
+        return self._expandable[row]
+
+    def decode_string(self, row: int) -> PrettyDocument | None:
+        """Return a copy with the string at ``row`` replaced by its decoded JSON, if any."""
+        if row not in self.paths:
+            return None
+        decoded = decode_json(self.strings[row])
+        if decoded is None:
+            return None
+
+        def replace(value: object, path: tuple[str | int, ...]) -> object:
+            if not path:
+                return decoded
+            copy = dict(value) if isinstance(value, dict) else list(value)  # type: ignore[arg-type]
+            copy[path[0]] = replace(value[path[0]], path[1:])  # type: ignore[index]
+            return copy
+
+        return PrettyDocument.from_value(replace(self.value, self.paths[row]))
 
 
 class StringView(TextArea):
@@ -118,6 +183,14 @@ class StringView(TextArea):
             value, self._pending_value = self._pending_value, None
             self.load_text(value)
             event.prevent_default()
+
+    def set_text(self, value: str) -> None:
+        if self._pending_value is not None:
+            self._pending_value = value
+            return
+        self._zero_match = None
+        self.load_text(value)
+        self.scroll_to(x=0, y=0, animate=False)
 
     def show_match(self, text: str, start: int, end: int) -> None:
         first = text_location(text, start)
@@ -177,6 +250,9 @@ class StringView(TextArea):
 class StringModal(ModalScreen[None]):
     """A read-only, wrapped document with viewport-based rendering."""
 
+    class Closed(Message):
+        """Posted to the app: closing restores focus without focus events."""
+
     BINDINGS = [
         Binding("escape", "dismiss", "Close"),
     ]
@@ -188,6 +264,7 @@ class StringModal(ModalScreen[None]):
         width: 90%;
         height: 90%;
         border: thick $accent;
+        border-subtitle-color: $text-muted;
         background: $surface;
         padding: 1 2;
     }
@@ -203,11 +280,41 @@ class StringModal(ModalScreen[None]):
     def __init__(self, value: str) -> None:
         super().__init__()
         self.value = value
+        # The decoded object or array shown as formatted JSON, if any, and earlier states.
+        self._data: dict | list | None = None
+        self._decoded: list[tuple[str, dict | list | None]] = []
+        # What the next decode would show, if anything; computed for the border hint.
+        self._next: tuple[str, dict | list | None] | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="inspector"):
             yield StringView(self.value)
             yield SearchBar(1, self._search_text, self._search_origin, "this string")
+
+    def on_mount(self) -> None:
+        self._update_hint()
+
+    def on_unmount(self) -> None:
+        self.app.post_message(self.Closed())
+
+    def _update_hint(self) -> None:
+        if self._data is None:
+            decoded = decode_json(self.value)
+            if decoded is None:
+                self._next = None
+            elif isinstance(decoded, str):
+                self._next = decoded, None
+            else:
+                self._next = json.dumps(decoded, indent=2, ensure_ascii=False), decoded
+        else:
+            data, changed = decode_nested(self._data)
+            self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None  # type: ignore[assignment]
+        hints = []
+        if self._next is not None:
+            hints.append("Press > to decode")
+        if self._decoded:
+            hints.append("< to undo" if hints else "Press < to undo")
+        self.query_one("#inspector").border_subtitle = " · ".join(hints)
 
     def _search_text(self, index: int) -> str:
         return self.value.replace("\r\n", "\n").replace("\r", "\n")
@@ -230,6 +337,27 @@ class StringModal(ModalScreen[None]):
         view = self.query_one(StringView)
         view.clear_match()
         event.stop()
+
+    def decode(self) -> bool:
+        """Decode the string, or once it is formatted JSON, every encoded string within it."""
+        if self._next is None:
+            return False
+        self._decoded.append((self.value, self._data))
+        self._show(*self._next)
+        return True
+
+    def undo_decode(self) -> bool:
+        if not self._decoded:
+            return False
+        self._show(*self._decoded.pop())
+        return True
+
+    def _show(self, value: str, data: dict | list | None) -> None:
+        self.value = value
+        self._data = data
+        self.query_one(SearchBar).cancel()
+        self.query_one(StringView).set_text(value)
+        self._update_hint()
 
     def action_dismiss(self) -> None:
         bar = self.query_one(SearchBar)
@@ -260,12 +388,46 @@ class JlvApp(App):
     Horizontal {
         height: 1fr;
     }
+    #panels {
+        layers: default hint;
+    }
+    /* Its own layer, so docking it doesn't resize the panels underneath. */
+    #hint-rack {
+        layer: hint;
+        dock: bottom;
+        width: 1fr;
+        height: auto;
+        align: right bottom;
+        display: none;
+    }
+    #decode-hint {
+        width: auto;
+        margin: 0 2 1 0;
+        padding: 0 1;
+        /* Match Textual's information toasts, such as the decode notification. */
+        background: $panel-lighten-1;
+        border-left: outer $success;
+    }
     #lines-list {
         width: 2fr;
     }
     #detail-list {
         width: 3fr;
         border-left: solid $accent;
+    }
+    /* The record list always shows its selection, dimmed when unfocused. The
+       JSON preview only shows its cursor while it is being navigated. */
+    #lines-list > .rowview--highlight {
+        background: $accent 35%;
+        text-style: none;
+    }
+    #detail-list > .rowview--highlight {
+        background: transparent;
+        text-style: none;
+    }
+    #lines-list:focus > .rowview--highlight, #detail-list:focus > .rowview--highlight {
+        background: $accent;
+        text-style: bold;
     }
     #index-status {
         height: auto;
@@ -279,6 +441,8 @@ class JlvApp(App):
         self.source = source
         self._documents: OrderedDict[int, PrettyDocument] = OrderedDict()
         self._document: PrettyDocument | None = None
+        # Documents and rows replaced by decoding JSON strings in the current record.
+        self._decoded: list[tuple[PrettyDocument, int]] = []
         self._detail_idx: int | None = None
         self._pretty_lines: list[tuple[str, str | None]] = []
         self._find_focus: RowView | None = None
@@ -287,9 +451,11 @@ class JlvApp(App):
         self._index_timer: Timer | None = None
 
     def compose(self) -> ComposeResult:
-        with Horizontal():
+        with Horizontal(id="panels"):
             yield RowView(id="lines-list")
             yield RowView(id="detail-list")
+            with Container(id="hint-rack"):
+                yield Static("Press > to decode", id="decode-hint", markup=False)
         status = Static("", id="index-status", markup=False)
         status.display = not self.source.complete
         yield status
@@ -310,7 +476,12 @@ class JlvApp(App):
 
     def _search_origin(self) -> tuple[int, int]:
         row = self.query_one("#detail-list", RowView).index
-        offset = sum(len(line) + 1 for line, _ in self._pretty_lines[:row])
+        lines = self._pretty_lines
+        if self._decoded:
+            # Search the original record from the outermost decoded string.
+            document, row = self._decoded[0]
+            lines = document.lines
+        offset = sum(len(line) + 1 for line, _ in lines[:row])
         return self.query_one("#lines-list", RowView).index, offset
 
     def action_find(self) -> None:
@@ -370,6 +541,24 @@ class JlvApp(App):
 
     def on_descendant_blur(self, event: events.DescendantBlur) -> None:
         self._pending_g = None
+        self._update_hint()
+
+    def on_descendant_focus(self, event: events.DescendantFocus) -> None:
+        self._update_hint()
+
+    def on_string_modal_closed(self, event: StringModal.Closed) -> None:
+        self._update_hint()
+
+    def _update_hint(self) -> None:
+        """Show the decode hint only while the JSON preview's selected string can be decoded."""
+        if not self.screen_stack:
+            return
+        base = self.screen_stack[0]
+        right = base.query_one("#detail-list", RowView)
+        base.query_one("#hint-rack").display = (
+            self.focused is right and self._document is not None
+            and self._document.expandable(right.index)
+        )
 
     def on_panel_key(self, event: PanelKey) -> None:
         panel = event.panel
@@ -377,7 +566,7 @@ class JlvApp(App):
             return
         key = event.character
         previous_g, self._pending_g = self._pending_g, None
-        if key in {"j", "k", "G", "0", "$", "[", "]", "%"} or key == "g" and previous_g is panel:
+        if key in {"j", "k", "G", "0", "$", "[", "]", "%", ">", "<"} or key == "g" and previous_g is panel:
             bar = self.screen.query_one(SearchBar)
             if bar.searching:
                 bar.cancel()
@@ -416,6 +605,15 @@ class JlvApp(App):
         elif key in {"n", "N"}:
             self._remember_input_target()
             self.screen.query_one(SearchBar).find(backwards=key == "N")
+        elif key in {">", "<"}:
+            if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
+                changed = self.screen.decode() if key == ">" else self.screen.undo_decode()
+            elif panel.id == "detail-list":
+                changed = self._decode_string(panel) if key == ">" else self._undo_decode(panel)
+            else:
+                changed = False
+            if not changed:
+                self.bell()
         elif (
             key in {"[", "]", "%"} and isinstance(panel, RowView)
             and panel.id == "detail-list" and self._document is not None
@@ -470,6 +668,9 @@ class JlvApp(App):
             if bar.display:
                 bar.close()
                 (self._find_focus or self.query_one("#detail-list", RowView)).focus()
+            elif self.focused is self.query_one("#detail-list", RowView):
+                # Back out from the record's details to the record list.
+                self.query_one("#lines-list", RowView).focus()
 
     def action_inspect_search_line(self) -> None:
         self._pending_g = None
@@ -485,6 +686,9 @@ class JlvApp(App):
         hit = event.hit
         if self.source.complete:
             self._refresh_index()
+        if self._decoded:
+            # Matches are located in the original record's formatted text.
+            self._detail_idx = None
         self.query_one("#lines-list", RowView).index = hit.record
         self._update_detail(hit.record)
         start_row, start_column = text_location(hit.text, hit.start)
@@ -494,6 +698,8 @@ class JlvApp(App):
         )
         event.bar.applied_origin = self._search_origin()
         event.bar.status(f"{'Wrapped - ' if hit.wrapped else ''}Record {hit.record + 1}")
+        # The document may have been restored without the cursor row changing.
+        self._update_hint()
 
     def on_search_bar_cleared(self, event: SearchBar.Cleared) -> None:
         view = self.query_one("#detail-list", RowView)
@@ -551,9 +757,16 @@ class JlvApp(App):
             # Ignore queued highlights superseded by newer input in the same frame.
             if event.index == event.view.index:
                 self._update_detail(event.index)
+        else:
+            self._update_hint()
 
     def on_row_view_selected(self, event: RowView.Selected) -> None:
-        if event.view.id == "detail-list" and self._inspect_string(event.index):
+        if event.view.id == "lines-list":
+            if not event.click:
+                # Drill down from the record list into the record's details.
+                self.query_one("#detail-list", RowView).focus()
+            return
+        if self._inspect_string(event.index):
             return
         self.bell()
 
@@ -566,9 +779,46 @@ class JlvApp(App):
                 return True
         return False
 
+    def _decode_string(self, view: RowView) -> bool:
+        if self._document is None:
+            return False
+        document = self._document.decode_string(view.index)
+        if document is None:
+            return False
+        self._decoded.append((self._document, view.index))
+        self._show_document(document, view.index)
+        layers = len(self._decoded)
+        self.notify(
+            f"Decoded {layers} layer{'s' if layers > 1 else ''}. "
+            "Press < to undo; changing records resets.",
+            title="JSON string decoded", timeout=3,
+        )
+        return True
+
+    def _undo_decode(self, view: RowView) -> bool:
+        if not self._decoded:
+            return False
+        document, row = self._decoded.pop()
+        self._show_document(document, row)
+        return True
+
+    def _show_document(self, document: PrettyDocument, row: int) -> None:
+        """Replace the current record's view, keeping the cursor and scroll position."""
+        view = self.query_one("#detail-list", RowView)
+        x, y = view.scroll_x, view.scroll_y
+        self._document = document
+        self._pretty_lines = document.lines
+        view.set_rows(
+            len(document.lines), document.width, lambda row: document.lines[row][0]
+        )
+        view.index = row
+        view.scroll_to(x=x, y=y, animate=False, force=True)
+        self._update_hint()
+
     def _update_detail(self, index: int) -> None:
         if index == self._detail_idx:
             return
+        self._decoded.clear()
         if index in self._documents:
             document = self._documents[index]
             self._documents.move_to_end(index)
