@@ -65,7 +65,7 @@ Open a string to read its decoded, word-wrapped contents:
 | % | Jump between matching object/array delimiters in the JSON preview |
 | Enter | Drill down: from the record list into the JSON preview, then into a selected string |
 | Click | Select a record, or inspect a string in the JSON preview |
-| > / < | Decode a JSON-encoded string in place (JSON preview or string inspector) / undo the last decode |
+| > / < | Decode a JSON-encoded string or open a data URI natively / undo the last JSON decode |
 | Mouse wheel / scrollbars | Scroll the panel under the pointer |
 | Ctrl+F, /, ? | Open search (both / and ? search forward) |
 | Enter in search | Find next match and return focus to the panel |
@@ -115,6 +115,27 @@ once it decodes to an object or array, and `<` undoes it. Once it shows JSON,
 each further `>` decodes every string at any depth that holds encoded JSON, by
 one layer, ringing the bell only when none do. The inspector's search covers
 whatever it currently shows.
+
+## Data URI previews
+
+When the selected string is a likely `data:` URI, the same hint says
+“Press > to open natively”. This works in the JSON preview and string inspector,
+and is offered only when `xdg-open` is on PATH on Linux, `open` is available on
+macOS, or `os.startfile` is available on Windows. Nothing opens until you press
+`>`. JSON string decoding and `<` undo continue to work as before.
+
+Opening decodes the payload in a background thread into a unique file in a
+per-session temporary directory. An explicit MIME type determines the extension;
+when omitted, `filetype` inspects at most 8 KiB of decoded header data. Unknown
+types fall back to text/plain (`.txt`). The hint inspects only the URI header,
+without decoding large payloads. Both base64 and percent-encoded payloads work.
+Malformed payloads, launch errors, and nonzero launcher exits within roughly
+500 ms ring the bell. Longer-running launchers are reaped in the background;
+JLV does not wait for or close the viewer.
+
+Temporary files are removed on normal JLV exit, with best-effort cleanup of
+locked files on Windows. A viewer may lose access to its file after JLV closes;
+a crash may leave temporary files behind.
 
 ## Large files
 

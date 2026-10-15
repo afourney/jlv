@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import sys
-from collections import OrderedDict
 from bisect import bisect_left, bisect_right
+from collections import OrderedDict
 from dataclasses import dataclass, field
 
 from rich.cells import cell_len
 from rich.text import Text
-from textual.app import App, ComposeResult
 from textual import events
+from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Container, Horizontal, Vertical
 from textual.document._document import Selection as TextSelection
@@ -19,9 +19,10 @@ from textual.screen import ModalScreen
 from textual.timer import Timer
 from textual.widgets import Static, TextArea
 
+from jlv.data_uri import NativePreview
 from jlv.rows import PanelKey, RowView
-from jlv.source import JsonlFile
 from jlv.search import SearchBar, text_location
+from jlv.source import JsonlFile
 
 
 def decode_json(text: str) -> object | None:
@@ -310,7 +311,9 @@ class StringModal(ModalScreen[None]):
             data, changed = decode_nested(self._data)
             self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None  # type: ignore[assignment]
         hints = []
-        if self._next is not None:
+        if self._data is None and self.app._native_preview.available(self.value):
+            hints.append("Press > to open natively")
+        elif self._next is not None:
             hints.append("Press > to decode")
         if self._decoded:
             hints.append("< to undo" if hints else "Press < to undo")
@@ -439,6 +442,7 @@ class JlvApp(App):
     def __init__(self, source: JsonlFile) -> None:
         super().__init__()
         self.source = source
+        self._native_preview = NativePreview()
         self._documents: OrderedDict[int, PrettyDocument] = OrderedDict()
         self._document: PrettyDocument | None = None
         # Documents and rows replaced by decoding JSON strings in the current record.
@@ -555,9 +559,15 @@ class JlvApp(App):
             return
         base = self.screen_stack[0]
         right = base.query_one("#detail-list", RowView)
+        native = self._document is not None and self._native_preview.available(
+            self._document.strings.get(right.index, "")
+        )
+        base.query_one("#decode-hint", Static).update(
+            "Press > to open natively" if native else "Press > to decode"
+        )
         base.query_one("#hint-rack").display = (
             self.focused is right and self._document is not None
-            and self._document.expandable(right.index)
+            and (native or self._document.expandable(right.index))
         )
 
     def on_panel_key(self, event: PanelKey) -> None:
@@ -606,6 +616,15 @@ class JlvApp(App):
             self._remember_input_target()
             self.screen.query_one(SearchBar).find(backwards=key == "N")
         elif key in {">", "<"}:
+            value = ""
+            if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
+                if self.screen._data is None:
+                    value = self.screen.value
+            elif panel.id == "detail-list" and self._document is not None:
+                value = self._document.strings.get(panel.index, "")
+            if key == ">" and self._native_preview.available(value):
+                self._native_preview.open(value, self._native_failure)
+                return
             if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
                 changed = self.screen.decode() if key == ">" else self.screen.undo_decode()
             elif panel.id == "detail-list":
@@ -778,6 +797,15 @@ class JlvApp(App):
                 self.query_one(SearchBar).cancel()
                 return True
         return False
+
+    def _native_failure(self) -> None:
+        try:
+            self.call_from_thread(self.bell)
+        except RuntimeError:
+            pass  # The app has already exited.
+
+    def on_unmount(self) -> None:
+        self._native_preview.cleanup()
 
     def _decode_string(self, view: RowView) -> bool:
         if self._document is None:
