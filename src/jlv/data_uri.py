@@ -105,6 +105,15 @@ def _unquote(text: str) -> bytes:
     return unquote_to_bytes(text)
 
 
+def _detect_type(header: bytes):
+    try:
+        return filetype.guess(header)
+    except Exception as error:
+        # Third-party matchers may fail on unusual headers. Use the existing
+        # preview-error path; a detector failure must never authorize opening.
+        raise ValueError("Unable to detect data URI file type") from error
+
+
 @dataclass(frozen=True)
 class DataURI:
     value: str
@@ -150,12 +159,12 @@ class DataURI:
                 or mimetypes.guess_extension(self.mime, strict=False)
                 or ".txt"
             )
-        kind = filetype.guess(self.prefix())
+        kind = _detect_type(self.prefix())
         return "." + kind.extension if kind else ".txt"
 
     def preview_info(self) -> PreviewInfo:
         header = self.prefix()
-        kind = filetype.guess(header)
+        kind = _detect_type(header)
         detected = kind.mime if kind else "text/plain" if _plain_text(header) else ""
         mime = self.mime or detected
         if self.mime:

@@ -286,6 +286,37 @@ class PreviewPolicyTests(unittest.TestCase):
 
 
 class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
+    async def test_recursive_detector_failure_rings_once_without_prompt_or_launch(self):
+        payload = bytes.fromhex("502a4d1800000000") * 1024
+        for mime in ("", "text/plain"):
+            with self.subTest(mime=mime), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / "synthetic.jsonl"
+                value = f"data:{mime};base64," + base64.b64encode(payload).decode()
+                path.write_text(json.dumps(value) + "\n")
+                with JsonlFile(path) as source:
+                    app = JlvApp(source)
+                    app._native_preview.launcher = "/test/open"
+                    rang = asyncio.Event()
+                    app.bell = Mock(side_effect=rang.set)
+                    with (
+                        patch.object(app, "_native_confirmation") as confirm,
+                        patch.object(DataURI, "decode") as decode,
+                        patch("jlv.data_uri.subprocess.Popen") as spawn,
+                        patch("jlv.data_uri.os.startfile", create=True) as start,
+                        patch("threading.excepthook") as uncaught,
+                    ):
+                        async with app.run_test(size=(100, 30)) as pilot:
+                            await pilot.press("tab", ">")
+                            await asyncio.wait_for(rang.wait(), timeout=2)
+                            await pilot.pause()
+                            app.bell.assert_called_once_with()
+                            confirm.assert_not_called()
+                            decode.assert_not_called()
+                            spawn.assert_not_called()
+                            start.assert_not_called()
+                            uncaught.assert_not_called()
+                            self.assertIsNone(app._native_preview.directory)
+
     async def test_decode_does_not_block_ui_or_recreate_files_after_exit(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
         def slow_decode(uri):
