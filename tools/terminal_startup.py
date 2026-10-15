@@ -9,8 +9,8 @@ import fcntl
 import importlib.util
 import json
 import os
-import pty
 import platform
+import pty
 import resource
 import select
 import statistics
@@ -36,11 +36,14 @@ def main() -> None:
     if args.navigation_samples < 1:
         parser.error("--navigation-samples must be positive")
     if args.child:
+
         def notify(stage: str) -> None:
             os.write(args.events_fd, (json.dumps([stage, time.perf_counter()]) + "\n").encode())
 
         if args.implementation:
-            spec = importlib.util.spec_from_file_location("terminal_implementation", args.implementation)
+            spec = importlib.util.spec_from_file_location(
+                "terminal_implementation", args.implementation
+            )
             assert spec is not None and spec.loader is not None
             module = importlib.util.module_from_spec(spec)
             sys.modules[spec.name] = module
@@ -69,7 +72,11 @@ def main() -> None:
             await rendered(0)
             notify("ready")
             for index in range(1, args.navigation_samples + 1):
-                while source is not None and len(source) <= index and not getattr(source, "complete", True):
+                while (
+                    source is not None
+                    and len(source) <= index
+                    and not getattr(source, "complete", True)
+                ):
                     if source.error:
                         notify("index_failed")
                         return
@@ -114,11 +121,19 @@ def main() -> None:
         try:
             module.main()
         finally:
-            os.write(args.events_fd, (json.dumps([
-                "peak_rss_mib", resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (
-                    1024 * 1024 if sys.platform == "darwin" else 1024
-                ),
-            ]) + "\n").encode())
+            os.write(
+                args.events_fd,
+                (
+                    json.dumps(
+                        [
+                            "peak_rss_mib",
+                            resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+                            / (1024 * 1024 if sys.platform == "darwin" else 1024),
+                        ]
+                    )
+                    + "\n"
+                ).encode(),
+            )
         return
 
     if args.output is None:
@@ -127,21 +142,33 @@ def main() -> None:
     events, writer = os.pipe()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 40, 120, 0, 0))
     command = [
-        sys.executable, __file__, str(args.file), "--child", "--events-fd", str(writer),
-        "--navigation-samples", str(args.navigation_samples),
+        sys.executable,
+        __file__,
+        str(args.file),
+        "--child",
+        "--events-fd",
+        str(writer),
+        "--navigation-samples",
+        str(args.navigation_samples),
     ]
     if args.wait_for_index:
         command.append("--wait-for-index")
     if args.implementation:
         command.extend(["--implementation", str(args.implementation)])
     results = {
-        "file": str(args.file), "bytes": args.file.stat().st_size,
+        "file": str(args.file),
+        "bytes": args.file.stat().st_size,
         "python": platform.python_version(),
-        "terminal": [120, 40], "timings_ms": {}, "stage": "startup",
+        "terminal": [120, 40],
+        "timings_ms": {},
+        "stage": "startup",
     }
     invoked = time.perf_counter()
     process = subprocess.Popen(
-        command, stdin=slave, stdout=slave, stderr=slave,
+        command,
+        stdin=slave,
+        stdout=slave,
+        stderr=slave,
         env={**os.environ, "TERM": "xterm-256color"},
         pass_fds=(writer,),
     )
@@ -182,12 +209,14 @@ def main() -> None:
 
     try:
         wait_for("ready")
-        results["timings_ms"].update({
-            "imports": (stages["imported"] - invoked) * 1000,
-            "load": (stages["loaded"] - stages["imported"]) * 1000,
-            "first_frame": (stages["ready"] - stages["loaded"]) * 1000,
-            "startup": (stages["ready"] - invoked) * 1000,
-        })
+        results["timings_ms"].update(
+            {
+                "imports": (stages["imported"] - invoked) * 1000,
+                "load": (stages["loaded"] - stages["imported"]) * 1000,
+                "first_frame": (stages["ready"] - stages["loaded"]) * 1000,
+                "startup": (stages["ready"] - invoked) * 1000,
+            }
+        )
         results["stage"] = "navigation"
         durations = []
         for index in range(1, args.navigation_samples + 1):
@@ -196,11 +225,13 @@ def main() -> None:
             os.write(master, b"\x1b[B")
             wait_for(f"down_{index}")
             durations.append((stages[f"down_{index}"] - started) * 1000)
-        results["timings_ms"].update({
-            "first_down": durations[0],
-            "down_median": statistics.median(durations),
-            "down_max": max(durations),
-        })
+        results["timings_ms"].update(
+            {
+                "first_down": durations[0],
+                "down_median": statistics.median(durations),
+                "down_max": max(durations),
+            }
+        )
         if args.wait_for_index:
             results["stage"] = "indexing"
             wait_for("indexed")

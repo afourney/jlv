@@ -25,7 +25,24 @@ class PanelKey(Message):
         self.character = event.character
         super().__init__()
         if event.character in {
-            "h", "j", "k", "l", "g", "G", "0", "$", ":", "/", "?", "n", "N", "[", "]", "%", ">", "<",
+            "h",
+            "j",
+            "k",
+            "l",
+            "g",
+            "G",
+            "0",
+            "$",
+            ":",
+            "/",
+            "?",
+            "n",
+            "N",
+            "[",
+            "]",
+            "%",
+            ">",
+            "<",
         }:
             event.stop()
             event.prevent_default()
@@ -89,7 +106,8 @@ class RowView(ScrollView, can_focus=True):
     def set_rows(self, count: int, width: int, line: Callable[[int], str]) -> None:
         if self.is_mounted and self.text_selection is not None:
             self.screen.selections = {
-                widget: selection for widget, selection in self.screen.selections.items()
+                widget: selection
+                for widget, selection in self.screen.selections.items()
                 if widget is not self
             }
         self.row_count = count
@@ -113,9 +131,7 @@ class RowView(ScrollView, can_focus=True):
     def watch_index(self, old: int, new: int) -> None:
         self.refresh_line(old)
         self.refresh_line(new)
-        self.scroll_to_region(
-            Region(0, new, 1, 1), animate=False, x_axis=False, force=True
-        )
+        self.scroll_to_region(Region(0, new, 1, 1), animate=False, x_axis=False, force=True)
         self.post_message(self.Highlighted(self, new))
 
     def render_line(self, y: int) -> Strip:
@@ -131,7 +147,7 @@ class RowView(ScrollView, can_focus=True):
         single_cell = text.isascii() and "\x7f" not in text
         # Avoid constructing/cropping a giant Rich segment for long ASCII strings.
         if single_cell:
-            visible = text[x:x + width].ljust(width)
+            visible = text[x : x + width].ljust(width)
             strip = Strip([Segment(visible)], width)
             character_offset = x
         else:
@@ -140,9 +156,7 @@ class RowView(ScrollView, can_focus=True):
                 strip = Strip([Segment(text)], cell_len(text))
                 _, remainder = Segment(text).split_cells(x)
                 character_offset = len(text) - len(remainder.text)
-                self._unicode_cache[key] = (
-                    strip.crop_extend(x, x + width, None), character_offset
-                )
+                self._unicode_cache[key] = (strip.crop_extend(x, x + width, None), character_offset)
                 if len(self._unicode_cache) > 256:
                     self._unicode_cache.popitem(last=False)
             self._unicode_cache.move_to_end(key)
@@ -166,22 +180,24 @@ class RowView(ScrollView, can_focus=True):
                 start, end = max(0, start - x), min(width, end - x)
                 if start < end:
                     before, selected, after = strip.divide([start, end, width])
-                    strip = Strip.join([
-                        before,
-                        Strip(
-                            Segment.apply_style(selected, post_style=selection_style),
-                            selected.cell_length,
-                        ),
-                        after,
-                    ])
+                    strip = Strip.join(
+                        [
+                            before,
+                            Strip(
+                                Segment.apply_style(selected, post_style=selection_style),
+                                selected.cell_length,
+                            ),
+                            after,
+                        ]
+                    )
         return strip.apply_offsets(character_offset, row)
 
     def show_match(self, start: Offset, end: Offset) -> None:
         self.find_selection = Selection(start, end)
         self.index = start.y
         line = self._line(start.y)
-        x = cell_len(line[:start.x])
-        end_x = cell_len(line[:end.x]) if end.y == start.y else cell_len(line)
+        x = cell_len(line[: start.x])
+        end_x = cell_len(line[: end.x]) if end.y == start.y else cell_len(line)
         width = max(1, min(end_x - x, self.scrollable_content_region.width))
         if self.virtual_size.width < x + width:
             self.virtual_size = Size(x + width, self.row_count)
@@ -212,9 +228,7 @@ class RowView(ScrollView, can_focus=True):
 
     def go_to_line(self, index: int) -> None:
         self.index = index
-        self.scroll_to_region(
-            Region(0, self.index, 1, 1), animate=False, x_axis=False, force=True
-        )
+        self.scroll_to_region(Region(0, self.index, 1, 1), animate=False, x_axis=False, force=True)
 
     def line_edge(self, end: bool) -> None:
         width = cell_len(self._line(self.index)) if self.row_count else 0

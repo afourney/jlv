@@ -7,9 +7,9 @@ import shutil
 import stat
 import tempfile
 from array import array
+from codecs import utf_8_decode
 from collections import OrderedDict
 from collections.abc import Generator, Iterator
-from codecs import utf_8_decode
 from itertools import islice
 from pathlib import Path
 from threading import Event, Lock, Thread
@@ -18,7 +18,6 @@ from typing import BinaryIO
 
 import orjson
 from rich.cells import cell_len
-
 
 _NON_ASCII = re.compile(r"[^\x20-\x7e]+")
 
@@ -40,7 +39,7 @@ class JsonlFile:
     """Incrementally validated JSONL with bounded previews and a byte-offset index."""
 
     def __init__(self, path: str | Path, *, eager: bool = True) -> None:
-        self._file: BinaryIO = open(path, "rb", buffering=1024 * 1024)
+        self._file: BinaryIO = open(path, "rb", buffering=1024 * 1024)  # noqa: SIM115 - closed by close()
         self._read_lock = Lock()
         self._cancelled = Event()
         self._thread: Thread | None = None
@@ -54,7 +53,7 @@ class JsonlFile:
         try:
             if not stat.S_ISREG(os.fstat(self._file.fileno()).st_mode):
                 with self._file as stream:
-                    self._file = tempfile.TemporaryFile("w+b")
+                    self._file = tempfile.TemporaryFile("w+b")  # noqa: SIM115 - closed by close()
                     shutil.copyfileobj(stream, self._file, length=1024 * 1024)
                 self._file.seek(0)
             self.file_size = os.fstat(self._file.fileno()).st_size
@@ -94,7 +93,8 @@ class JsonlFile:
                     if prefix.isascii():
                         # An ordinary ASCII preview cannot widen an already wider panel.
                         if (
-                            first_blank is None and b"\t" not in prefix
+                            first_blank is None
+                            and b"\t" not in prefix
                             and self.preview_width >= max(5, len(str(line_number))) + 1005
                         ):
                             self.offsets.append(offset)
@@ -128,7 +128,9 @@ class JsonlFile:
                     if "\u200d" in preview or "\ufe0f" in preview:
                         width = cell_len(preview)
                     else:
-                        width += sum(cell_len(run) - len(run) for run in _NON_ASCII.findall(preview))
+                        width += sum(
+                            cell_len(run) - len(run) for run in _NON_ASCII.findall(preview)
+                        )
                 else:
                     width = 0
             self.preview_width = max(self.preview_width, width)
@@ -140,7 +142,12 @@ class JsonlFile:
             self.complete = True
 
     def start_indexing(self) -> None:
-        if self.complete or self.error is not None or self._thread is not None or self._cancelled.is_set():
+        if (
+            self.complete
+            or self.error is not None
+            or self._thread is not None
+            or self._cancelled.is_set()
+        ):
             return
         self._thread = Thread(target=self._finish_indexing, name="jlv-index", daemon=True)
         self._thread.start()
@@ -185,7 +192,7 @@ class JsonlFile:
     def raw(self, index: int) -> str:
         if not 0 <= index < len(self):
             raise IndexError(index)
-        start, end = self.offsets[index:index + 2]
+        start, end = self.offsets[index : index + 2]
         with self._read_lock:
             if self._file.closed:
                 raise ValueError("file is closed")

@@ -1,4 +1,5 @@
 """Bounded encoded-string inspection and session-scoped native opening."""
+
 from __future__ import annotations
 
 import base64
@@ -70,13 +71,13 @@ def _plain_text(header: bytes) -> bool:
     try:
         # A bounded prefix may end partway through a valid UTF-8 character.
         text = codecs.getincrementaldecoder("utf-8")().decode(
-            header, final=len(header) < SIGNATURE_BYTES,
+            header,
+            final=len(header) < SIGNATURE_BYTES,
         )
     except UnicodeError:
         return False
-    return (
-        not any(ord(char) < 32 and char not in "\t\n\r\f" for char in text)
-        and not any(marker in text.lower() for marker in ("<", "#!", "[desktop entry]", "@echo"))
+    return not any(ord(char) < 32 and char not in "\t\n\r\f" for char in text) and not any(
+        marker in text.lower() for marker in ("<", "#!", "[desktop entry]", "@echo")
     )
 
 
@@ -149,7 +150,7 @@ class DataURI:
         while end < len(self.value) and units < count:
             end += 3 if self.value[end] == "%" else 1
             units += 1
-        raw = _unquote(self.value[self.offset:end])
+        raw = _unquote(self.value[self.offset : end])
         if self.base64:
             raw = base64.b64decode(raw, validate=True)
         return raw[:SIGNATURE_BYTES]
@@ -186,7 +187,7 @@ class DataURI:
         return PreviewInfo(self.mime, detected, extension, warning)
 
     def decode(self) -> bytes:
-        raw = _unquote(self.value[self.offset:])
+        raw = _unquote(self.value[self.offset :])
         return base64.b64decode(raw, validate=True) if self.base64 else raw
 
 
@@ -199,7 +200,7 @@ class PlainBase64(DataURI):
         # scan an entire multi-megabyte string. Full validation happens on >.
         probe = value[:BASE64_PROBE_CHARS].translate(BASE64_WHITESPACE)
         tail = value[-128:].translate(BASE64_WHITESPACE)
-        if len(probe) < 8 or len(probe) < 16 and not tail.endswith("="):
+        if len(probe) < 8 or (len(probe) < 16 and not tail.endswith("=")):
             return None
         if not all(re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", part) for part in (probe, tail)):
             return None
@@ -220,7 +221,7 @@ class PlainBase64(DataURI):
         count = ((SIGNATURE_BYTES + 2) // 3) * 4
         # Cap source scanning as well as decoded output, allowing normal line
         # wrapping without unbounded searches through whitespace.
-        raw = self.value[:count * 2].translate(BASE64_WHITESPACE)[:count]
+        raw = self.value[: count * 2].translate(BASE64_WHITESPACE)[:count]
         return self._decode(raw)[:SIGNATURE_BYTES]
 
     def decode(self) -> bytes:
@@ -242,10 +243,14 @@ class NativePreview:
             DataURI.parse(value) is not None or PlainBase64.parse(value) is not None
         )
 
-    def open(self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None) -> None:
+    def open(
+        self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None
+    ) -> None:
         threading.Thread(target=self._open, args=(value, failed, confirm), daemon=True).start()
 
-    def _open(self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None) -> None:
+    def _open(
+        self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None
+    ) -> None:
         try:
             with self._lock:
                 if self._closed:
@@ -258,10 +263,14 @@ class NativePreview:
                 if confirm is None:
                     failed()  # Fail closed when no UI can obtain consent.
                 else:
+
                     def allow() -> None:
                         threading.Thread(
-                            target=self._launch, args=(uri, info.extension, failed), daemon=True,
+                            target=self._launch,
+                            args=(uri, info.extension, failed),
+                            daemon=True,
                         ).start()
+
                     confirm(info, allow)
                 return
             self._launch(uri, info.extension, failed)
@@ -279,15 +288,19 @@ class NativePreview:
                     return
                 if self.directory is None:
                     self.directory = tempfile.mkdtemp(prefix="jlv-")
-                with tempfile.NamedTemporaryFile(dir=self.directory, suffix=extension, delete=False) as f:
+                with tempfile.NamedTemporaryFile(
+                    dir=self.directory, suffix=extension, delete=False
+                ) as f:
                     f.write(payload)
                     path = str(Path(f.name).absolute())
                 if self.launcher == "startfile":
                     os.startfile(path)
                     return
                 child = subprocess.Popen(
-                    [self.launcher, path], stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    [self.launcher, path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             try:
                 if child.wait(timeout=0.5) != 0:

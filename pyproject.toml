@@ -28,3 +28,58 @@ build-backend = "uv_build"
 
 [tool.uv.build-backend]
 module-name = "jlv"
+
+[dependency-groups]
+dev = [
+    "codespell",
+    "poethepoet",
+    "pytest>=8",
+    "ruff",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "auto"
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "W",   # pycodestyle warnings
+    "F",   # Pyflakes
+    "I",   # isort
+    "B",   # flake8-bugbear
+    "C4",  # flake8-comprehensions
+    "UP",  # pyupgrade
+    "SIM", # flake8-simplify
+    "BLE", # flake8-blind-except
+    "ISC", # implicit string concatenation
+    "RUF", # Ruff-specific rules
+]
+ignore = [
+    "E501",    # the formatter handles line lengths
+    "RUF012",  # Textual declares BINDINGS and COMPONENT_CLASSES as plain class attributes
+    "SIM108",  # nested conditional expressions read worse than if/else blocks
+]
+
+[tool.poe.tasks]
+format = "ruff format --check --diff src tests tools scripts"
+format-fix = "ruff format src tests tools scripts"
+lint = "ruff check src tests tools scripts"
+lint-fix = "ruff check --fix src tests tools scripts"
+spell = "codespell --check-hidden src tests tools scripts README.md pyproject.toml .github"
+test = "pytest"
+build = "uv build --out-dir dist"
+check-dist = "python scripts/check_dist.py"
+build-check = ["build", "check-dist"]
+check = ["format", "lint", "spell"]
+check-all = ["check", "test", "build-check"]
+fix-all = ["format-fix", "lint-fix"]

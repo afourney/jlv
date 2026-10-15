@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import sys
 from bisect import bisect_left, bisect_right
@@ -31,7 +32,7 @@ def decode_json(text: str) -> object | None:
     """Decode a JSON-encoded string to an object, array, or string; otherwise None."""
     stripped = text.strip()
     # Skip parsing plain text: objects, arrays, and strings start and end with these.
-    if len(stripped) < 2 or stripped[0] not in "{[\"" or stripped[-1] not in "}]\"":
+    if len(stripped) < 2 or stripped[0] not in '{["' or stripped[-1] not in '}]"':
         return None
     try:
         decoded = json.loads(stripped)
@@ -89,7 +90,10 @@ class PrettyDocument:
         blocks: list[tuple[int, int]] = []
 
         def append(
-            value: object, depth: int, prefix: str = "", suffix: str = "",
+            value: object,
+            depth: int,
+            prefix: str = "",
+            suffix: str = "",
             path: tuple[str | int, ...] = (),
         ) -> None:
             indent = "  " * depth
@@ -102,9 +106,16 @@ class PrettyDocument:
                 lines.append((indent + prefix + opening, None))
                 entries = value.items() if isinstance(value, dict) else enumerate(value)
                 for i, (key, child) in enumerate(entries):
-                    child_prefix = json.dumps(key, ensure_ascii=False) + ": " if isinstance(value, dict) else ""
+                    child_prefix = (
+                        json.dumps(key, ensure_ascii=False) + ": "
+                        if isinstance(value, dict)
+                        else ""
+                    )
                     append(
-                        child, depth + 1, child_prefix, "," if i < len(value) - 1 else "",
+                        child,
+                        depth + 1,
+                        child_prefix,
+                        "," if i < len(value) - 1 else "",
                         (*path, key),
                     )
                 lines.append((indent + closing + suffix, None))
@@ -120,18 +131,23 @@ class PrettyDocument:
                     kind = "bool"
                 elif isinstance(value, (int, float)):
                     kind = "number"
-                lines.append((indent + prefix + json.dumps(value, ensure_ascii=False) + suffix, kind))
+                lines.append(
+                    (indent + prefix + json.dumps(value, ensure_ascii=False) + suffix, kind)
+                )
             if isinstance(value, (dict, list)):
                 blocks[block_index] = (block_start, len(lines) - 1)
 
         append(value, 0)
         return cls(
-            lines, strings,
+            lines,
+            strings,
             max(
                 len(line) if line.isascii() and "\x7f" not in line else cell_len(line)
                 for line, _ in lines
             ),
-            blocks, value, paths,
+            blocks,
+            value,
+            paths,
         )
 
     def expandable(self, row: int) -> bool:
@@ -178,14 +194,22 @@ class StringView(TextArea):
             highlight_cursor_line=False,
             soft_wrap=True,
             id="modal-container",
+            placeholder="Loading...",
         )
 
     def on_resize(self, event: events.Resize) -> None:
         if self._pending_value is not None and self.content_size.width:
-            # Wrap once at the actual viewport width, not at each startup size.
-            value, self._pending_value = self._pending_value, None
-            self.load_text(value)
+            # Paint the placeholder before wrapping, which can be slow for huge strings.
+            self.call_after_refresh(self._load_pending)
             event.prevent_default()
+
+    def _load_pending(self) -> None:
+        if self._pending_value is None:
+            return
+        # Wrap once at the actual viewport width, not at each startup size.
+        value, self._pending_value = self._pending_value, None
+        self.placeholder = ""
+        self.load_text(value)
 
     def set_text(self, value: str) -> None:
         if self._pending_value is not None:
@@ -295,7 +319,8 @@ class StringModal(ModalScreen[None]):
             yield SearchBar(1, self._search_text, self._search_origin, "this string")
 
     def on_mount(self) -> None:
-        self._update_hint()
+        # Decoding huge strings is slow; let the loading placeholder paint first.
+        self.call_after_refresh(self._update_hint)
 
     def on_unmount(self) -> None:
         self.app.post_message(self.Closed())
@@ -415,7 +440,8 @@ class NativePreviewWarning(ModalScreen[bool]):
             yield Static("Allow opening this file?", id="native-warning-title")
             yield Static(
                 "Opening this file may run code or invoke an unexpected application. "
-                "Only allow files from a source you trust.", markup=False,
+                "Only allow files from a source you trust.",
+                markup=False,
             )
             yield Static(
                 f"Declared type: {self.info.declared_mime or 'not specified'}\n"
@@ -538,7 +564,10 @@ class JlvApp(App):
         status.display = not self.source.complete
         yield status
         yield SearchBar(
-            lambda: len(self.source), self._search_text, self._search_origin, "JSONL records",
+            lambda: len(self.source),
+            self._search_text,
+            self._search_origin,
+            "JSONL records",
             unavailable=self._index_unavailable,
         )
 
@@ -546,7 +575,9 @@ class JlvApp(App):
         if self.source.error is not None:
             return f"Indexing stopped: {self.source.error}"
         if not self.source.complete:
-            return f"Still indexing ({len(self.source):,} records). Try again when indexing completes."
+            return (
+                f"Still indexing ({len(self.source):,} records). Try again when indexing completes."
+            )
         return None
 
     def _search_text(self, index: int) -> str:
@@ -599,7 +630,11 @@ class JlvApp(App):
         if target is None or not target.is_mounted or target.screen is not self.screen:
             event.bar.status("Focus a viewing panel before opening a command.")
             return
-        if target.id == "lines-list" and self.source.complete and target.row_count != len(self.source):
+        if (
+            target.id == "lines-list"
+            and self.source.complete
+            and target.row_count != len(self.source)
+        ):
             self._refresh_index()
         number = command[1:] if command.startswith(":") else ""
         if not number.isascii() or not number.isdecimal():
@@ -607,10 +642,13 @@ class JlvApp(App):
             return
         # Avoid conversion errors for arbitrarily long pasted numbers.
         if len(number) > 12 or not 1 <= int(number) <= target.row_count:
-            if target.id == "lines-list" and (len(number) > 12 or int(number) > target.row_count):
-                if reason := self._index_unavailable():
-                    event.bar.status(reason)
-                    return
+            if (
+                target.id == "lines-list"
+                and (len(number) > 12 or int(number) > target.row_count)
+                and (reason := self._index_unavailable())
+            ):
+                event.bar.status(reason)
+                return
             event.bar.status(f"Line must be between 1 and {target.row_count}.")
             return
         target.go_to_line(int(number) - 1)
@@ -640,7 +678,8 @@ class JlvApp(App):
             "Press > to open natively" if native else "Press > to decode"
         )
         base.query_one("#hint-rack").display = (
-            self.focused is right and self._document is not None
+            self.focused is right
+            and self._document is not None
             and (native or self._document.expandable(right.index))
         )
 
@@ -650,7 +689,9 @@ class JlvApp(App):
             return
         key = event.character
         previous_g, self._pending_g = self._pending_g, None
-        if key in {"j", "k", "G", "0", "$", "[", "]", "%", ">", "<"} or key == "g" and previous_g is panel:
+        if key in {"j", "k", "G", "0", "$", "[", "]", "%", ">", "<"} or (
+            key == "g" and previous_g is panel
+        ):
             bar = self.screen.query_one(SearchBar)
             if bar.searching:
                 bar.cancel()
@@ -681,8 +722,10 @@ class JlvApp(App):
         elif key == ":":
             self._remember_input_target()
             scope = (
-                "String line" if isinstance(panel, StringView)
-                else "JSONL record" if panel.id == "lines-list"
+                "String line"
+                if isinstance(panel, StringView)
+                else "JSONL record"
+                if panel.id == "lines-list"
                 else "Formatted JSON line"
             )
             self.screen.query_one(SearchBar).open_command(scope)
@@ -708,8 +751,10 @@ class JlvApp(App):
             if not changed:
                 self.bell()
         elif (
-            key in {"[", "]", "%"} and isinstance(panel, RowView)
-            and panel.id == "detail-list" and self._document is not None
+            key in {"[", "]", "%"}
+            and isinstance(panel, RowView)
+            and panel.id == "detail-list"
+            and self._document is not None
         ):
             if key == "%":
                 target = self._document.matching_delimiter(panel.index)
@@ -729,7 +774,12 @@ class JlvApp(App):
                 and self.screen.query_one(SearchBar).display
             )
         if action in {
-            "find", "find_next", "find_previous", "close_search", "toggle_regex", "toggle_case",
+            "find",
+            "find_next",
+            "find_previous",
+            "close_search",
+            "toggle_regex",
+            "toggle_case",
         }:
             return bool(self.screen.query(SearchBar))
         return super().check_action(action, parameters)
@@ -827,9 +877,8 @@ class JlvApp(App):
         else:
             percent = self.source.scanned_bytes * 100 / max(1, self.source.file_size)
             status.update(f"Indexing: {count:,} records ({percent:.0f}%)")
-        if complete or error is not None:
-            if self._index_timer is not None:
-                self._index_timer.stop()
+        if (complete or error is not None) and self._index_timer is not None:
+            self._index_timer.stop()
 
     def on_row_view_end_requested(self, event: RowView.EndRequested) -> None:
         if reason := self._index_unavailable():
@@ -873,15 +922,15 @@ class JlvApp(App):
         return False
 
     def _native_failure(self) -> None:
-        try:
+        with contextlib.suppress(RuntimeError):  # The app has already exited.
             self.call_from_thread(self.bell)
-        except RuntimeError:
-            pass  # The app has already exited.
 
     def _native_confirmation(self, info: PreviewInfo, allow: Callable[[], None]) -> None:
         self.post_message(NativePreviewConfirmationRequested(info, allow))
 
-    def on_native_preview_confirmation_requested(self, event: NativePreviewConfirmationRequested) -> None:
+    def on_native_preview_confirmation_requested(
+        self, event: NativePreviewConfirmationRequested
+    ) -> None:
         if isinstance(self.screen, NativePreviewWarning):
             return
 
@@ -906,7 +955,8 @@ class JlvApp(App):
         self.notify(
             f"Decoded {layers} layer{'s' if layers > 1 else ''}. "
             "Press < to undo; changing records resets.",
-            title="JSON string decoded", timeout=3,
+            title="JSON string decoded",
+            timeout=3,
         )
         return True
 
@@ -923,9 +973,7 @@ class JlvApp(App):
         x, y = view.scroll_x, view.scroll_y
         self._document = document
         self._pretty_lines = document.lines
-        view.set_rows(
-            len(document.lines), document.width, lambda row: document.lines[row][0]
-        )
+        view.set_rows(len(document.lines), document.width, lambda row: document.lines[row][0])
         view.index = row
         view.scroll_to(x=x, y=y, animate=False, force=True)
         self._update_hint()

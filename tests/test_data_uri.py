@@ -30,22 +30,29 @@ class DataURITests(unittest.TestCase):
         with patch("jlv.data_uri.filetype.guess") as guess:
             self.assertEqual(self.uri("data:text/plain;base64," + payload).extension(), ".txt")
             self.assertEqual(self.uri("data:image/jpeg;base64," + payload).extension(), ".jpg")
-            self.assertEqual(self.uri("data:application/x-jlv-unknown," + payload).extension(), ".txt")
+            self.assertEqual(
+                self.uri("data:application/x-jlv-unknown," + payload).extension(), ".txt"
+            )
             guess.assert_not_called()
 
     def test_omitted_mime_sniffs_or_falls_back(self):
-        self.assertEqual(self.uri("data:;base64," + base64.b64encode(PNG).decode()).extension(), ".png")
+        self.assertEqual(
+            self.uri("data:;base64," + base64.b64encode(PNG).decode()).extension(), ".png"
+        )
         self.assertEqual(self.uri("data:;charset=UTF-8,hello").extension(), ".txt")
         # Actual filetype TAR matcher needs byte 261, beyond the README's 261 bytes.
         tar = b"\0" * 257 + b"ustar" + b"\0" * 50
-        self.assertEqual(self.uri("data:;base64," + base64.b64encode(tar).decode()).extension(), ".tar")
+        self.assertEqual(
+            self.uri("data:;base64," + base64.b64encode(tar).decode()).extension(), ".tar"
+        )
 
     def test_encoding_forms(self):
         for value, expected in [
             ("data:,hello%20world+!", b"hello world+!"),
             ("DATA:text/plain;charset=utf-8;BASE64,aGk%3D", b"hi"),
             ("data:application/octet-stream,%00%FF", b"\0\xff"),
-            ("data:,", b""), ("data:;base64,", b""),
+            ("data:,", b""),
+            ("data:;base64,", b""),
         ]:
             self.assertEqual(self.uri(value).decode(), expected)
 
@@ -59,31 +66,52 @@ class DataURITests(unittest.TestCase):
             self.uri("data:,%z0").decode()
 
     def test_multimegabyte_prefix_is_bounded(self):
-        for payload in [base64.b64encode(PNG + b"x" * 4_000_000).decode(),
-                        base64.b64encode(PNG + b"x" * 4_000_000).decode().replace("A", "%41")]:
+        for payload in [
+            base64.b64encode(PNG + b"x" * 4_000_000).decode(),
+            base64.b64encode(PNG + b"x" * 4_000_000).decode().replace("A", "%41"),
+        ]:
             uri = self.uri("data:;base64," + payload)
             with patch("jlv.data_uri.base64.b64decode", wraps=base64.b64decode) as decode:
-                with patch("jlv.data_uri.filetype.guess", wraps=__import__("filetype").guess) as guess:
+                with patch(
+                    "jlv.data_uri.filetype.guess", wraps=__import__("filetype").guess
+                ) as guess:
                     self.assertEqual(uri.extension(), ".png")
                     self.assertLessEqual(len(guess.call_args.args[0]), SIGNATURE_BYTES)
-                self.assertLessEqual(len(decode.call_args.args[0]), ((SIGNATURE_BYTES + 2) // 3) * 4)
+                self.assertLessEqual(
+                    len(decode.call_args.args[0]), ((SIGNATURE_BYTES + 2) // 3) * 4
+                )
         uri = self.uri("data:," + "%41" * 2_000_000)
         self.assertEqual(len(uri.prefix()), SIGNATURE_BYTES)
         preview = NativePreview()
         preview.launcher = "test"
-        with patch.object(DataURI, "decode", side_effect=AssertionError), patch.object(DataURI, "prefix", side_effect=AssertionError):
+        with (
+            patch.object(DataURI, "decode", side_effect=AssertionError),
+            patch.object(DataURI, "prefix", side_effect=AssertionError),
+        ):
             self.assertTrue(preview.available(uri.value))
 
     def test_platform_availability(self):
         for platform, command in [("linux", "xdg-open"), ("darwin", "open")]:
-            with patch("jlv.data_uri.sys.platform", platform), patch("jlv.data_uri.shutil.which", return_value="/bin/" + command) as which:
+            with (
+                patch("jlv.data_uri.sys.platform", platform),
+                patch("jlv.data_uri.shutil.which", return_value="/bin/" + command) as which,
+            ):
                 self.assertEqual(native_launcher(), "/bin/" + command)
                 which.assert_called_once_with(command)
-            with patch("jlv.data_uri.sys.platform", platform), patch("jlv.data_uri.shutil.which", return_value=None):
+            with (
+                patch("jlv.data_uri.sys.platform", platform),
+                patch("jlv.data_uri.shutil.which", return_value=None),
+            ):
                 self.assertIsNone(native_launcher())
-        with patch("jlv.data_uri.sys.platform", "win32"), patch("jlv.data_uri.os.startfile", Mock(), create=True):
+        with (
+            patch("jlv.data_uri.sys.platform", "win32"),
+            patch("jlv.data_uri.os.startfile", Mock(), create=True),
+        ):
             self.assertEqual(native_launcher(), "startfile")
-        with patch("jlv.data_uri.sys.platform", "win32"), patch("jlv.data_uri.os.startfile", None, create=True):
+        with (
+            patch("jlv.data_uri.sys.platform", "win32"),
+            patch("jlv.data_uri.os.startfile", None, create=True),
+        ):
             self.assertIsNone(native_launcher())
         with patch("jlv.data_uri.sys.platform", "other"):
             self.assertIsNone(native_launcher())
@@ -139,11 +167,13 @@ class LauncherTests(unittest.TestCase):
     def test_slow_launcher_reaped_without_failure_or_kill(self):
         reaped = threading.Event()
         child = Mock()
+
         def wait(timeout=None):
             if timeout is not None:
                 raise subprocess.TimeoutExpired("viewer", timeout)
             reaped.set()
             return 1
+
         child.wait.side_effect = wait
         with patch("jlv.data_uri.subprocess.Popen", return_value=child):
             self.preview._open("data:,ok", self.failed)
@@ -156,10 +186,12 @@ class LauncherTests(unittest.TestCase):
         # Synthetic launcher commands exercise the real process lifecycle on this host.
         real_popen = subprocess.Popen
         children = []
+
         def spawn(args, **kwargs):
             child = real_popen([sys.executable, "-c", "import sys; sys.exit(7)"], **kwargs)
             children.append(child)
             return child
+
         with patch("jlv.data_uri.subprocess.Popen", side_effect=spawn):
             self.preview._open("data:,test", self.failed)
         self.failed.assert_called_once()
@@ -224,13 +256,21 @@ class PreviewPolicyTests(unittest.TestCase):
             guess.assert_not_called()
 
     def test_inspection_bounds_and_utf8_boundary(self):
-        uri = DataURI.parse("data:image/png;base64," + base64.b64encode(PNG + b"x" * 4_000_000).decode())
-        with patch.object(DataURI, "decode", side_effect=AssertionError), patch(
-            "jlv.data_uri.filetype.guess", wraps=__import__("filetype").guess,
-        ) as guess:
+        uri = DataURI.parse(
+            "data:image/png;base64," + base64.b64encode(PNG + b"x" * 4_000_000).decode()
+        )
+        with (
+            patch.object(DataURI, "decode", side_effect=AssertionError),
+            patch(
+                "jlv.data_uri.filetype.guess",
+                wraps=__import__("filetype").guess,
+            ) as guess,
+        ):
             self.assertIsNone(uri.preview_info().warning)
             self.assertLessEqual(len(guess.call_args.args[0]), SIGNATURE_BYTES)
-        self.assertIsNone(self.info("text/plain", b"a" * (SIGNATURE_BYTES - 1) + "é".encode()).warning)
+        self.assertIsNone(
+            self.info("text/plain", b"a" * (SIGNATURE_BYTES - 1) + "é".encode()).warning
+        )
 
     def test_all_launchers_fail_closed_or_request_consent_before_decoding(self):
         payloads = [
@@ -244,9 +284,13 @@ class PreviewPolicyTests(unittest.TestCase):
                     preview.launcher = launcher
                     self.addCleanup(preview.cleanup)
                     failed, confirm = Mock(), Mock()
-                    with patch("jlv.data_uri.os.startfile", create=True) as start, patch(
-                        "jlv.data_uri.subprocess.Popen",
-                    ) as spawn, patch.object(DataURI, "decode", side_effect=AssertionError):
+                    with (
+                        patch("jlv.data_uri.os.startfile", create=True) as start,
+                        patch(
+                            "jlv.data_uri.subprocess.Popen",
+                        ) as spawn,
+                        patch.object(DataURI, "decode", side_effect=AssertionError),
+                    ):
                         preview._open(payload, failed)
                         failed.assert_called_once()
                         preview._open(payload, failed, confirm)
@@ -275,9 +319,15 @@ class PreviewPolicyTests(unittest.TestCase):
             finally:
                 finished.set()
 
-        with patch.object(preview, "_launch", side_effect=launch), patch.object(
-            DataURI, "decode", side_effect=AssertionError,
-        ), patch("jlv.data_uri.os.startfile", create=True) as start:
+        with (
+            patch.object(preview, "_launch", side_effect=launch),
+            patch.object(
+                DataURI,
+                "decode",
+                side_effect=AssertionError,
+            ),
+            patch("jlv.data_uri.os.startfile", create=True) as start,
+        ):
             allow()
             self.assertTrue(finished.wait(1))
             start.assert_not_called()
@@ -319,18 +369,23 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_decode_does_not_block_ui_or_recreate_files_after_exit(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+
         def slow_decode(uri):
             entered.set()
             release.wait(5)
             finished.set()
             return b"hello"
+
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "synthetic.jsonl"
             path.write_text(json.dumps("data:,hello") + "\n")
             with JsonlFile(path) as source:
                 app = JlvApp(source)
                 app._native_preview.launcher = "/test/open"
-                with patch.object(DataURI, "decode", slow_decode), patch("jlv.data_uri.subprocess.Popen") as spawn:
+                with (
+                    patch.object(DataURI, "decode", slow_decode),
+                    patch("jlv.data_uri.subprocess.Popen") as spawn,
+                ):
                     try:
                         async with app.run_test(size=(100, 30)) as pilot:
                             await pilot.press("tab", ">")
@@ -384,7 +439,10 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(bells, [1])
                         self.assertEqual(app._decoded, [])
                         await pilot.press("enter")
-                        self.assertEqual(app.screen.query_one("#inspector").border_subtitle, "Press > to open natively")
+                        self.assertEqual(
+                            app.screen.query_one("#inspector").border_subtitle,
+                            "Press > to open natively",
+                        )
                         await pilot.press(">")
                         await pilot.pause()
                         self.assertEqual(bells, [1, 1])
@@ -409,7 +467,9 @@ class WarningAppTests(unittest.IsolatedAsyncioTestCase):
         self.app = JlvApp(self.source)
         self.app._native_preview.launcher = "startfile"
         self.launched = threading.Event()
-        start = patch("jlv.data_uri.os.startfile", side_effect=lambda path: self.launched.set(), create=True)
+        start = patch(
+            "jlv.data_uri.os.startfile", side_effect=lambda path: self.launched.set(), create=True
+        )
         self.start = start.start()
         self.addCleanup(start.stop)
 

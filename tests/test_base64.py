@@ -19,9 +19,13 @@ class PlainBase64Tests(unittest.TestCase):
     def test_padded_unpadded_and_wrapped_payloads(self):
         for payload in [PNG, b"Hello, base64 world!"]:
             encoded = base64.b64encode(payload).decode()
-            for value in [encoded, encoded.rstrip("="), " \n" + "\r\n".join(
-                encoded[index:index + 12] for index in range(0, len(encoded), 12)
-            ) + "\t"]:
+            for value in [
+                encoded,
+                encoded.rstrip("="),
+                " \n"
+                + "\r\n".join(encoded[index : index + 12] for index in range(0, len(encoded), 12))
+                + "\t",
+            ]:
                 with self.subTest(value=value):
                     decoded = PlainBase64.parse(value)
                     self.assertIsNotNone(decoded)
@@ -30,11 +34,21 @@ class PlainBase64Tests(unittest.TestCase):
 
     def test_rejects_ordinary_text_json_hex_and_other_encodings(self):
         for value in [
-            "", "hello", "ordinarywordwithoutspaces", "UPPERCASEWORDWITHOUTSPACES",
-            "ordinary words with spaces", "0123456789abcdef" * 4,
-            '"SGVsbG8="', '{"encoded": "SGVsbG8="}', '["SGVsbG8="]',
-            "https://example.com/image.png", "data:image/png;base64,example",
-            "YWJjZA%3D%3D", "YWJjZA===", "YWJjZA==!", "YWJj_ZA==",
+            "",
+            "hello",
+            "ordinarywordwithoutspaces",
+            "UPPERCASEWORDWITHOUTSPACES",
+            "ordinary words with spaces",
+            "0123456789abcdef" * 4,
+            '"SGVsbG8="',
+            '{"encoded": "SGVsbG8="}',
+            '["SGVsbG8="]',
+            "https://example.com/image.png",
+            "data:image/png;base64,example",
+            "YWJjZA%3D%3D",
+            "YWJjZA===",
+            "YWJjZA==!",
+            "YWJj_ZA==",
             "é" * 32,
         ]:
             with self.subTest(value=value):
@@ -72,8 +86,13 @@ class PlainBase64Tests(unittest.TestCase):
         value = TrackedString(base64.b64encode(PNG + b"x" * 4_000_000).decode())
         preview = NativePreview()
         preview.launcher = "/test/open"
-        with patch.object(PlainBase64, "decode", side_effect=AssertionError), patch.object(
-            PlainBase64, "prefix", side_effect=AssertionError,
+        with (
+            patch.object(PlainBase64, "decode", side_effect=AssertionError),
+            patch.object(
+                PlainBase64,
+                "prefix",
+                side_effect=AssertionError,
+            ),
         ):
             self.assertTrue(preview.available(value))
         self.assertLessEqual(value.largest_slice, BASE64_PROBE_CHARS)
@@ -151,7 +170,9 @@ class PlainBase64AppTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(first.read_bytes(), PNG)
                 await pilot.press("enter")
                 self.assertIsInstance(app.screen, StringModal)
-                self.assertEqual(app.screen.query_one("#inspector").border_subtitle, "Press > to open natively")
+                self.assertEqual(
+                    app.screen.query_one("#inspector").border_subtitle, "Press > to open natively"
+                )
                 await pilot.press(">")
                 await self.until(pilot, lambda: spawn.call_count == 2)
                 self.assertEqual(Path(spawn.call_args.args[0][1]).read_bytes(), PNG)
