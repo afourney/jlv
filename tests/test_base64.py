@@ -16,6 +16,36 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 
 
 class PlainBase64Tests(unittest.TestCase):
+    def test_whitespace_heavy_truncated_prefix_keeps_complete_quartets(self):
+        payload = b"Hello, base64 world!\n" * 2000
+        encoded = base64.b64encode(payload).decode()
+        value = "\n    ".join(encoded[i : i + 3] for i in range(0, len(encoded), 3))
+        uri = PlainBase64.parse(value)
+        self.assertIsNotNone(uri)
+        prefix = uri.prefix()
+        self.assertGreater(len(prefix), 0)
+        self.assertEqual(prefix, payload[: len(prefix)])
+        self.assertEqual(uri.decode(), payload)
+        preview = NativePreview()
+        preview.launcher = "/test/open"
+        self.addCleanup(preview.cleanup)
+        failed, confirm = Mock(), Mock()
+        with patch(
+            "jlv.data_uri.subprocess.Popen", return_value=Mock(wait=Mock(return_value=0))
+        ) as spawn:
+            preview._open(value, failed, confirm)
+            failed.assert_not_called()
+            confirm.assert_not_called()
+            spawn.assert_called_once()
+            self.assertEqual(Path(spawn.call_args.args[0][1]).read_bytes(), payload)
+            # Invalid data beyond the bounded prefix must still prevent opening.
+            broken = value[:30000] + "!" + value[30001:]
+            spawn.reset_mock()
+            preview._open(broken, failed, confirm)
+            failed.assert_called_once_with()
+            spawn.assert_not_called()
+            confirm.assert_not_called()
+
     def test_padded_unpadded_and_wrapped_payloads(self):
         for payload in [PNG, b"Hello, base64 world!"]:
             encoded = base64.b64encode(payload).decode()

@@ -21,6 +21,13 @@ from textual.pilot import Pilot
 import jlv
 
 
+def peak_rss_mib() -> float:
+    """Normalize getrusage units, matching terminal_startup.py."""
+    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / (
+        1024 * 1024 if sys.platform == "darwin" else 1024
+    )
+
+
 async def benchmark(path: Path, output: Path, samples: int) -> None:
     module_path = Path(jlv.__file__)
     source_files = (
@@ -46,7 +53,7 @@ async def benchmark(path: Path, output: Path, samples: int) -> None:
             "p95_ms": sorted(values)[max(0, int(len(values) * 0.95 + 0.999) - 1)] * 1000,
             "max_ms": max(values) * 1000,
         }
-        results["peak_rss_mib"] = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+        results["peak_rss_mib"] = peak_rss_mib()
         output.write_text(json.dumps(results, indent=2) + "\n")
         print(name, results["timings"][name], flush=True)
 

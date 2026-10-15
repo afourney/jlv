@@ -222,6 +222,11 @@ class PlainBase64(DataURI):
         # Cap source scanning as well as decoded output, allowing normal line
         # wrapping without unbounded searches through whitespace.
         raw = self.value[: count * 2].translate(BASE64_WHITESPACE)[:count]
+        if len(self.value) > count * 2:
+            # A source-boundary cut may leave a partial quartet after removing
+            # whitespace. Only decode complete groups from this partial sample;
+            # decode() still validates the entire payload before opening.
+            raw = raw[: len(raw) // 4 * 4]
         return self._decode(raw)[:SIGNATURE_BYTES]
 
     def decode(self) -> bytes:
