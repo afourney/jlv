@@ -208,3 +208,4 @@ __marimo__/
 
 # Local performance fixture
 /stress-test.jsonl
+/large_value_test.jsonl
