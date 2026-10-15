@@ -369,6 +369,9 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("end")
                     self.assertGreater(inspector.scroll_y, 0)
                     await pilot.resize_terminal(80, 24)
+                    # TextArea re-scrolls to the cursor after the resize refresh; let that
+                    # land first, or it can override the "home" scroll below.
+                    await pilot.pause()
                     self.assertEqual(inspector.text, value)
                     await pilot.press("home")
                     self.assertEqual(inspector.scroll_y, 0)
