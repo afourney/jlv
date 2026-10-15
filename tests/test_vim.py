@@ -312,7 +312,12 @@ class VimTests(unittest.IsolatedAsyncioTestCase):
                 self.assertFalse(bar.display)
                 self.assertIsNone(right.find_selection)
                 self.assertIsInstance(self.app.screen, StringModal)
-                self.assertEqual(self.app.screen.query_one(StringView).text, "short")
+                inspector = self.app.screen.query_one(StringView)
+                # Loading is deferred until after the first inspector refresh.
+                async with asyncio.timeout(5):
+                    while inspector._pending_value is not None:
+                        await asyncio.sleep(0.005)
+                self.assertEqual(inspector.text, "short")
                 self.assertEqual(bar.hit, saved_hit)
                 self.assertEqual(bar.query_one(Input).value, "needle")
                 await pilot.press("escape")

@@ -16,7 +16,7 @@ from textual.geometry import Offset
 from textual.selection import Selection
 from textual.widgets import Input, Static, TextArea
 
-from jlv import JlvApp, PrettyDocument, StringModal, main
+from jlv import JlvApp, PrettyDocument, StringModal, StringView, main
 from jlv.rows import RowView
 from jlv.search import SearchBar
 from jlv.source import JsonlFile
@@ -360,7 +360,11 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 await pilot.press("enter")
                 self.assertIsInstance(self.app.screen, StringModal)
-                inspector = self.app.screen.query_one("#modal-container", TextArea)
+                inspector = self.app.screen.query_one(StringView)
+                # Loading is deferred until after the first inspector refresh.
+                async with asyncio.timeout(5):
+                    while inspector._pending_value is not None:
+                        await asyncio.sleep(0.005)
                 self.assertEqual(inspector.text, value)
                 self.assertTrue(inspector.read_only)
                 await pilot.press("x")
