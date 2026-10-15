@@ -161,13 +161,12 @@ class SearchBar(Vertical):
 
     def _status_text(self) -> str:
         if self.command_mode:
-            return f"{self.command_scope}: :number to jump | :q to close | Esc: cancel\n{self._status}"
+            return (
+                f"{self.command_scope}: :number to jump | :q to close | Esc: cancel\n{self._status}"
+            )
         regex_state = "on" if self.regular_expression else "off"
         case_state = "on" if self.match_case else "off"
-        return (
-            f"Alt+R: Regex {regex_state} | Alt+C: Match case {case_state}\n"
-            f"{self._status}"
-        )
+        return f"Alt+R: Regex {regex_state} | Alt+C: Match case {case_state}\n{self._status}"
 
     def status(self, text: str) -> None:
         self._status = text
@@ -300,8 +299,14 @@ class SearchBar(Vertical):
         async def search() -> None:
             try:
                 hit = await asyncio.to_thread(
-                    find_match, self.text_at, count, options,
-                    origin, previous, backwards, cancelled,
+                    find_match,
+                    self.text_at,
+                    count,
+                    options,
+                    origin,
+                    previous,
+                    backwards,
+                    cancelled,
                 )
             except asyncio.CancelledError:
                 return

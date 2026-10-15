@@ -65,7 +65,7 @@ Open a string to read its decoded, word-wrapped contents:
 | % | Jump between matching object/array delimiters in the JSON preview |
 | Enter | Drill down: from the record list into the JSON preview, then into a selected string |
 | Click | Select a record, or inspect a string in the JSON preview |
-| > / < | Decode a JSON-encoded string or open a data URI natively / undo the last JSON decode |
+| > / < | Decode a JSON-encoded string or open encoded data natively / undo the last JSON decode |
 | Mouse wheel / scrollbars | Scroll the panel under the pointer |
 | Ctrl+F, /, ? | Open search (both / and ? search forward) |
 | Enter in search | Find next match and return focus to the panel |
@@ -116,13 +116,28 @@ each further `>` decodes every string at any depth that holds encoded JSON, by
 one layer, ringing the bell only when none do. The inspector's search covers
 whatever it currently shows.
 
-## Data URI previews
+## Data URI and base64 previews
 
-When the selected string is a likely `data:` URI, the same hint says
+When the selected string is a likely `data:` URI or plain base64, the same hint says
 “Press > to open natively”. This works in the JSON preview and string inspector,
 and is offered only when `xdg-open` is on PATH on Linux, `open` is available on
 macOS, or `os.startfile` is available on Windows. Nothing opens until you press
 `>`. JSON string decoding and `<` undo continue to work as before.
+
+Plain base64 uses the standard alphabet (`A–Z`, `a–z`, `0–9`, `+`, `/`), with
+optional `=` padding and space/tab/newline wrapping. Its file type is inferred
+from decoded contents, and the same allowlist and Allow/Cancel warning apply.
+For example, a base64 PNG opens as `.png`, while a base64 executable requires
+consent. JSON-quoted strings first decode as JSON; pressing `>` again can then
+open the resulting base64 string. Native opening does not change the displayed
+string or add an undo step.
+
+Detection is deliberately conservative: it requires at least 8 encoded
+characters, or 16 without padding, and mixed case or a `+`, `/`, or `=` signal.
+Pure hexadecimal strings and ambiguous short or single-case words receive no
+native-opening hint. The hint checks only the first 4 KiB and last 128 source
+characters, without decoding. Full base64 validation happens in the background
+when opening; malformed contents ring the bell and never launch a handler.
 
 Opening first inspects at most 8 KiB of decoded header data in a background
 thread. The formats below open without an additional warning when the detected
@@ -180,9 +195,9 @@ sandbox the native application.
 After any required consent, full decoding runs in a background thread into a
 unique file in a per-session temporary directory. Non-allowlisted explicit MIME
 types retain their usual extension; unknown types fall back to `.txt` but still
-require a warning unless recognized as plain text. The hint inspects only the
-URI header, without decoding large payloads. Both base64 and percent-encoded
-payloads work.
+require a warning unless recognized as plain text. Data URI hints inspect only
+the URI header, without decoding large payloads. Both base64 and percent-encoded
+data URI payloads work.
 Malformed payloads, launch errors, and nonzero launcher exits within roughly
 500 ms ring the bell. Longer-running launchers are reaped in the background;
 JLV does not wait for or close the viewer.

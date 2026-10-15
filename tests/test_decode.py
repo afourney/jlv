@@ -42,12 +42,22 @@ class DecodeDocumentTests(unittest.TestCase):
 
     def test_expandable_matches_decode(self):
         value = {
-            "obj": json.dumps(INNER), "arr": " [1, 2] ", "str": json.dumps("x"), "plain": "hello",
-            "number": "42", "bad": "{oops}", "n": 5, "quoted": '"', "empty": "",
+            "obj": json.dumps(INNER),
+            "arr": " [1, 2] ",
+            "str": json.dumps("x"),
+            "plain": "hello",
+            "number": "42",
+            "bad": "{oops}",
+            "n": 5,
+            "quoted": '"',
+            "empty": "",
         }
         document = PrettyDocument.from_value(value)
-        expandable = {document.lines[row][0].split(":")[0].strip() for row in range(len(document.lines))
-                      if document.expandable(row)}
+        expandable = {
+            document.lines[row][0].split(":")[0].strip()
+            for row in range(len(document.lines))
+            if document.expandable(row)
+        }
         self.assertEqual(expandable, {'"obj"', '"arr"', '"str"'})
         for row in range(len(document.lines)):
             self.assertEqual(document.expandable(row), document.decode_string(row) is not None)
@@ -83,6 +93,7 @@ class DecodeAppTests(unittest.IsolatedAsyncioTestCase):
     def count_bells(self):
         def bell():
             self.bells += 1
+
         self.app.bell = bell
 
     async def test_repeated_decode_and_undo(self):
@@ -129,7 +140,7 @@ class DecodeAppTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_inspector_shows_decoded_strings(self):
         async with self.app.run_test(size=(100, 30)) as pilot:
-            right, row = await self.focus_payload(pilot)
+            right, _row = await self.focus_payload(pilot)
             await pilot.press(">", ">")
             right.go_to_line(next(i for i, line in enumerate(self.lines()) if "needle" in line))
             await pilot.press("enter")
@@ -159,7 +170,7 @@ class DecodeAppTests(unittest.IsolatedAsyncioTestCase):
             await pilot.pause()
             # The JSON preview isn't focused yet.
             self.assertFalse(rack.display)
-            right, row = await self.focus_payload(pilot)
+            right, _row = await self.focus_payload(pilot)
             self.assertTrue(rack.display)
             await pilot.press("k")
             self.assertFalse(rack.display)
@@ -220,6 +231,7 @@ class StringRecordHintTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(self.app._decoded, [])
             self.assertEqual(self.app.query_one("#detail-list", RowView).index, 0)
             self.assertTrue(rack.display)
+
 
 class EscapeTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -292,10 +304,17 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         path = Path(self.directory.name) / "data.jsonl"
         self.envelope = {
-            "a": json.dumps(json.dumps({"x": 1})), "b": json.dumps([1, 2]), "c": "plain", "d": 5,
+            "a": json.dumps(json.dumps({"x": 1})),
+            "b": json.dumps([1, 2]),
+            "c": "plain",
+            "d": 5,
             "e": {"nested": json.dumps({"no": 1})},
         }
-        record = {"payload": json.dumps(json.dumps(INNER)), "text": "plain", "envelope": json.dumps(self.envelope)}
+        record = {
+            "payload": json.dumps(json.dumps(INNER)),
+            "text": "plain",
+            "envelope": json.dumps(self.envelope),
+        }
         path.write_text(json.dumps(record) + "\n")
         self.source = JsonlFile(path)
         self.addCleanup(self.source.close)
@@ -345,7 +364,6 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(bells, [1])
             self.assertEqual(modal.query_one(StringView).text, "plain")
 
-
     async def test_repeated_decode_expands_strings_one_layer_at_a_time(self):
         async with self.app.run_test(size=(100, 30)) as pilot:
             bells = []
@@ -361,7 +379,10 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
 
             self.assertEqual(await decode(), self.envelope)
             expected = {
-                **self.envelope, "a": json.dumps({"x": 1}), "b": [1, 2], "e": {"nested": {"no": 1}},
+                **self.envelope,
+                "a": json.dumps({"x": 1}),
+                "b": [1, 2],
+                "e": {"nested": {"no": 1}},
             }
             self.assertEqual(await decode(), expected)
             expected["a"] = {"x": 1}
@@ -375,7 +396,9 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(view.text, state)
 
     async def test_decoded_field_reveals_nested_encoded_array(self):
-        chain = json.dumps({"body": json.dumps({"text": json.dumps(["a", {"c": json.dumps({"deep": True})}])})})
+        chain = json.dumps(
+            {"body": json.dumps({"text": json.dumps(["a", {"c": json.dumps({"deep": True})}])})}
+        )
         async with self.app.run_test(size=(100, 30)) as pilot:
             await self.open_inspector(pilot, 2)
             modal = self.app.screen
@@ -383,7 +406,9 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
             view = modal.query_one(StringView)
             for _ in range(4):
                 await pilot.press(">")
-            self.assertEqual(json.loads(view.text), {"body": {"text": ["a", {"c": {"deep": True}}]}})
+            self.assertEqual(
+                json.loads(view.text), {"body": {"text": ["a", {"c": {"deep": True}}]}}
+            )
 
     async def test_border_hint_tracks_what_can_be_decoded(self):
         async with self.app.run_test(size=(100, 30)) as pilot:

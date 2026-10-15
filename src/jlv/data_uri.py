@@ -1,4 +1,5 @@
-"""Bounded data URI inspection and explicit, session-scoped native opening."""
+"""Bounded encoded-string inspection and session-scoped native opening."""
+
 from __future__ import annotations
 
 import base64
@@ -23,6 +24,8 @@ import filetype
 # No footer is requested. Unknown or truncated signatures fall back to text.
 SIGNATURE_BYTES = 8192
 HEADER_LIMIT = 4096
+BASE64_PROBE_CHARS = 4096
+BASE64_WHITESPACE = str.maketrans("", "", " \t\r\n")
 
 # Explicit MIME/extension pairs, never image/* or an OS-configured extension.
 # These formats normally display data; this is a policy, not a viewer sandbox.
@@ -68,13 +71,13 @@ def _plain_text(header: bytes) -> bool:
     try:
         # A bounded prefix may end partway through a valid UTF-8 character.
         text = codecs.getincrementaldecoder("utf-8")().decode(
-            header, final=len(header) < SIGNATURE_BYTES,
+            header,
+            final=len(header) < SIGNATURE_BYTES,
         )
     except UnicodeError:
         return False
-    return (
-        not any(ord(char) < 32 and char not in "\t\n\r\f" for char in text)
-        and not any(marker in text.lower() for marker in ("<", "#!", "[desktop entry]", "@echo"))
+    return not any(ord(char) < 32 and char not in "\t\n\r\f" for char in text) and not any(
+        marker in text.lower() for marker in ("<", "#!", "[desktop entry]", "@echo")
     )
 
 
@@ -111,7 +114,7 @@ def _detect_type(header: bytes):
     except Exception as error:
         # Third-party matchers may fail on unusual headers. Use the existing
         # preview-error path; a detector failure must never authorize opening.
-        raise ValueError("Unable to detect data URI file type") from error
+        raise ValueError("Unable to detect encoded file type") from error
 
 
 @dataclass(frozen=True)
@@ -147,7 +150,7 @@ class DataURI:
         while end < len(self.value) and units < count:
             end += 3 if self.value[end] == "%" else 1
             units += 1
-        raw = _unquote(self.value[self.offset:end])
+        raw = _unquote(self.value[self.offset : end])
         if self.base64:
             raw = base64.b64decode(raw, validate=True)
         return raw[:SIGNATURE_BYTES]
@@ -184,8 +187,50 @@ class DataURI:
         return PreviewInfo(self.mime, detected, extension, warning)
 
     def decode(self) -> bytes:
-        raw = _unquote(self.value[self.offset:])
+        raw = _unquote(self.value[self.offset :])
         return base64.b64decode(raw, validate=True) if self.base64 else raw
+
+
+class PlainBase64(DataURI):
+    """Likely standard base64 without a data URI header; MIME is inferred."""
+
+    @classmethod
+    def parse(cls, value: str) -> PlainBase64 | None:
+        # Inspect bounded source slices only: hints never decode the payload or
+        # scan an entire multi-megabyte string. Full validation happens on >.
+        probe = value[:BASE64_PROBE_CHARS].translate(BASE64_WHITESPACE)
+        tail = value[-128:].translate(BASE64_WHITESPACE)
+        if len(probe) < 8 or (len(probe) < 16 and not tail.endswith("=")):
+            return None
+        if not all(re.fullmatch(r"[A-Za-z0-9+/]+={0,2}", part) for part in (probe, tail)):
+            return None
+        if re.fullmatch(r"[0-9a-fA-F]+", probe):
+            return None  # Hex IDs and hashes are too ambiguous.
+        if not any(char in "+/=" for char in probe + tail) and not (
+            re.search(r"[A-Z]", probe) and re.search(r"[a-z]", probe)
+        ):
+            return None  # Ordinary single-case words are too ambiguous.
+        return cls(value, 0, "", True)
+
+    @staticmethod
+    def _decode(text: str) -> bytes:
+        raw = text.translate(BASE64_WHITESPACE).encode("ascii")
+        return base64.b64decode(raw + b"=" * (-len(raw) % 4), validate=True)
+
+    def prefix(self) -> bytes:
+        count = ((SIGNATURE_BYTES + 2) // 3) * 4
+        # Cap source scanning as well as decoded output, allowing normal line
+        # wrapping without unbounded searches through whitespace.
+        raw = self.value[: count * 2].translate(BASE64_WHITESPACE)[:count]
+        if len(self.value) > count * 2:
+            # A source-boundary cut may leave a partial quartet after removing
+            # whitespace. Only decode complete groups from this partial sample;
+            # decode() still validates the entire payload before opening.
+            raw = raw[: len(raw) // 4 * 4]
+        return self._decode(raw)[:SIGNATURE_BYTES]
+
+    def decode(self) -> bytes:
+        return self._decode(self.value)
 
 
 class NativePreview:
@@ -198,18 +243,24 @@ class NativePreview:
         self._closed = False
 
     def available(self, value: str) -> bool:
-        # Hint needs only the header, never a payload copy or decode.
-        return self.launcher is not None and DataURI.parse(value) is not None
+        # Hints inspect bounded source slices, never the full payload.
+        return self.launcher is not None and (
+            DataURI.parse(value) is not None or PlainBase64.parse(value) is not None
+        )
 
-    def open(self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None) -> None:
+    def open(
+        self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None
+    ) -> None:
         threading.Thread(target=self._open, args=(value, failed, confirm), daemon=True).start()
 
-    def _open(self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None) -> None:
+    def _open(
+        self, value: str, failed: Callable[[], None], confirm: ConfirmPreview | None = None
+    ) -> None:
         try:
             with self._lock:
                 if self._closed:
                     return
-            uri = DataURI.parse(value)
+            uri = DataURI.parse(value) or PlainBase64.parse(value)
             if uri is None or self.launcher is None:
                 raise ValueError("No native preview")
             info = uri.preview_info()
@@ -217,10 +268,14 @@ class NativePreview:
                 if confirm is None:
                     failed()  # Fail closed when no UI can obtain consent.
                 else:
+
                     def allow() -> None:
                         threading.Thread(
-                            target=self._launch, args=(uri, info.extension, failed), daemon=True,
+                            target=self._launch,
+                            args=(uri, info.extension, failed),
+                            daemon=True,
                         ).start()
+
                     confirm(info, allow)
                 return
             self._launch(uri, info.extension, failed)
@@ -238,15 +293,19 @@ class NativePreview:
                     return
                 if self.directory is None:
                     self.directory = tempfile.mkdtemp(prefix="jlv-")
-                with tempfile.NamedTemporaryFile(dir=self.directory, suffix=extension, delete=False) as f:
+                with tempfile.NamedTemporaryFile(
+                    dir=self.directory, suffix=extension, delete=False
+                ) as f:
                     f.write(payload)
                     path = str(Path(f.name).absolute())
                 if self.launcher == "startfile":
                     os.startfile(path)
                     return
                 child = subprocess.Popen(
-                    [self.launcher, path], stdin=subprocess.DEVNULL,
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    [self.launcher, path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
                 )
             try:
                 if child.wait(timeout=0.5) != 0:

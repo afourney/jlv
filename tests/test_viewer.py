@@ -16,7 +16,7 @@ from textual.geometry import Offset
 from textual.selection import Selection
 from textual.widgets import Input, Static, TextArea
 
-from jlv import JlvApp, PrettyDocument, StringModal, main
+from jlv import JlvApp, PrettyDocument, StringModal, StringView, main
 from jlv.rows import RowView
 from jlv.search import SearchBar
 from jlv.source import JsonlFile
@@ -114,8 +114,13 @@ class SourceTests(unittest.TestCase):
 
     def test_validation_preserves_python_json_values(self):
         records = [
-            "NaN", "Infinity", "-Infinity", "1e400",
-            str(2 ** 100), "9" * 400, '"\\ud800"',
+            "NaN",
+            "Infinity",
+            "-Infinity",
+            "1e400",
+            str(2**100),
+            "9" * 400,
+            '"\\ud800"',
             '{"duplicate":1,"duplicate":2}',
             "[" * 130 + "0" + "]" * 130,
         ]
@@ -138,8 +143,12 @@ class SourceTests(unittest.TestCase):
         records = [
             json.dumps(text, ensure_ascii=False)
             for text in (
-                "界" * 2000, "😀" * 2000, "x" * 3999 + "😀", "x" * 999 + " ",
-                " " * 10_000, "界" + " " * 10_000,
+                "界" * 2000,
+                "😀" * 2000,
+                "x" * 3999 + "😀",
+                "x" * 999 + " ",
+                " " * 10_000,
+                "界" + " " * 10_000,
             )
         ]
         records.extend([" " * 5000 + '{"padded":true}' + " " * 5000, '"short"' + " " * 5000])
@@ -155,8 +164,7 @@ class SourceTests(unittest.TestCase):
 
     def test_validation_preserves_python_depth_and_integer_limits(self):
         records = [
-            b"[" * depth + b"0" + b"]" * depth
-            for depth in (sys.getrecursionlimit() + 10, 10_000)
+            b"[" * depth + b"0" + b"]" * depth for depth in (sys.getrecursionlimit() + 10, 10_000)
         ]
         if limit := sys.get_int_max_str_digits():
             records.append(b"9" * (limit + 1))
@@ -166,9 +174,11 @@ class SourceTests(unittest.TestCase):
                 try:
                     json.loads(record)
                 except (ValueError, RecursionError):
-                    with self.assertRaisesRegex(ValueError, "line 2 is not valid JSON"):
-                        with JsonlFile(self.path):
-                            pass
+                    with (
+                        self.assertRaisesRegex(ValueError, "line 2 is not valid JSON"),
+                        JsonlFile(self.path),
+                    ):
+                        pass
                 else:
                     with JsonlFile(self.path) as source:
                         self.assertEqual(len(source), 2)
@@ -215,6 +225,7 @@ class SourceTests(unittest.TestCase):
         source = JsonlFile(self.path, eager=False)
         self.addCleanup(source.close)
         from jlv.source import orjson
+
         decode = orjson.loads
 
         def slow_decode(raw):
@@ -251,8 +262,8 @@ class DocumentTests(unittest.TestCase):
             42,
             -1.25,
             float("nan"),
-            "a: sentence, with \"quotes\"\n\tand unicode 界 😀",
-            {"key:with:colons": "correct: value", "quoted\"key": ["a:b", ""]},
+            'a: sentence, with "quotes"\n\tand unicode 界 😀',
+            {"key:with:colons": "correct: value", 'quoted"key': ["a:b", ""]},
             {"a": [1, {"nested": [[], {}, None, True, "long" * 1000]}]},
         ]
         for value in values:
@@ -298,8 +309,12 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(self.directory.cleanup)
         path = Path(self.directory.name) / "test.jsonl"
         self.values = [
-            {"id": i, "odd:key": "A short sentence.", "array": list(range(100)),
-             "body": ("A paragraph with a colon: and quoted \"text\". " * 30 + "\n\n") * 50}
+            {
+                "id": i,
+                "odd:key": "A short sentence.",
+                "array": list(range(100)),
+                "body": ('A paragraph with a colon: and quoted "text". ' * 30 + "\n\n") * 50,
+            }
             for i in range(150)
         ]
         path.write_text("".join(json.dumps(value) + "\n" for value in self.values))
@@ -345,7 +360,11 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.pause()
                 await pilot.press("enter")
                 self.assertIsInstance(self.app.screen, StringModal)
-                inspector = self.app.screen.query_one("#modal-container", TextArea)
+                inspector = self.app.screen.query_one(StringView)
+                # Loading is deferred until after the first inspector refresh.
+                async with asyncio.timeout(5):
+                    while inspector._pending_value is not None:
+                        await asyncio.sleep(0.005)
                 self.assertEqual(inspector.text, value)
                 self.assertTrue(inspector.read_only)
                 await pilot.press("x")
@@ -354,6 +373,9 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("end")
                     self.assertGreater(inspector.scroll_y, 0)
                     await pilot.resize_terminal(80, 24)
+                    # TextArea re-scrolls to the cursor after the resize refresh; let that
+                    # land first, or it can override the "home" scroll below.
+                    await pilot.pause()
                     self.assertEqual(inspector.text, value)
                     await pilot.press("home")
                     self.assertEqual(inspector.scroll_y, 0)
@@ -423,7 +445,8 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(strip.cell_length, right.size.width)
             left = self.app.query_one("#lines-list", RowView)
             self.app.screen.selections = {
-                right: selection, left: Selection(Offset(0, 0), Offset(4, 0))
+                right: selection,
+                left: Selection(Offset(0, 0), Offset(4, 0)),
             }
             left.index = 1
             await pilot.pause()
@@ -468,10 +491,12 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_background_progress_preserves_navigation_and_full_file_commands(self):
         path = Path(self.directory.name) / "background.jsonl"
-        path.write_text("".join(
-            json.dumps({"id": i, "text": "last needle" if i == 199 else "body"}) + "\n"
-            for i in range(200)
-        ))
+        path.write_text(
+            "".join(
+                json.dumps({"id": i, "text": "last needle" if i == 199 else "body"}) + "\n"
+                for i in range(200)
+            )
+        )
         with JsonlFile(path, eager=False) as source:
             start_indexing = source.start_indexing
             app = JlvApp(source)
@@ -576,7 +601,9 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                         self.assertEqual(app._detail_idx, 199)
 
 
-@unittest.skipUnless(os.environ.get("JLV_STRESS_FILE"), "set JLV_STRESS_FILE for full fixture coverage")
+@unittest.skipUnless(
+    os.environ.get("JLV_STRESS_FILE"), "set JLV_STRESS_FILE for full fixture coverage"
+)
 class StressFileTests(unittest.TestCase):
     def test_every_record_matches_original_formatting(self):
         path = Path(os.environ["JLV_STRESS_FILE"])
