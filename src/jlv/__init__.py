@@ -4,7 +4,9 @@ import json
 import sys
 from bisect import bisect_left, bisect_right
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import ClassVar
 
 from rich.cells import cell_len
 from rich.text import Text
@@ -17,9 +19,9 @@ from textual.geometry import Offset, Region
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Static, TextArea
+from textual.widgets import Button, Static, TextArea
 
-from jlv.data_uri import NativePreview
+from jlv.data_uri import NativePreview, PreviewInfo
 from jlv.rows import PanelKey, RowView
 from jlv.search import SearchBar, text_location
 from jlv.source import JsonlFile
@@ -371,6 +373,78 @@ class StringModal(ModalScreen[None]):
             self.app.pop_screen()
 
 
+class NativePreviewWarning(ModalScreen[bool]):
+    """Obtain consent for one file; Enter and Escape cancel by default."""
+
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = """
+    NativePreviewWarning {
+        align: center middle;
+    }
+    NativePreviewWarning #native-warning {
+        width: 76;
+        max-width: 90%;
+        height: auto;
+        max-height: 90%;
+        overflow-y: auto;
+        border: thick $warning;
+        padding: 1 2;
+    }
+    NativePreviewWarning Static {
+        height: auto;
+        margin-bottom: 1;
+    }
+    NativePreviewWarning #native-warning-title {
+        text-style: bold;
+    }
+    NativePreviewWarning Horizontal {
+        height: auto;
+        align-horizontal: right;
+    }
+    NativePreviewWarning Button {
+        margin-left: 1;
+    }
+    """
+
+    def __init__(self, info: PreviewInfo) -> None:
+        super().__init__()
+        self.info = info
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="native-warning"):
+            yield Static("Allow opening this file?", id="native-warning-title")
+            yield Static(
+                "Opening this file may run code or invoke an unexpected application. "
+                "Only allow files from a source you trust.", markup=False,
+            )
+            yield Static(
+                f"Declared type: {self.info.declared_mime or 'not specified'}\n"
+                f"Detected type: {self.info.detected_mime or 'unknown'}\n"
+                f"File extension: {self.info.extension}\n\n{self.info.warning}",
+                markup=False,
+            )
+            with Horizontal():
+                yield Button("Allow", variant="warning", id="native-allow")
+                yield Button("Cancel", variant="primary", id="native-cancel")
+
+    def on_mount(self) -> None:
+        self.query_one("#native-cancel", Button).focus()
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        event.stop()
+        self.dismiss(event.button.id == "native-allow")
+
+
+class NativePreviewConfirmationRequested(Message):
+    def __init__(self, info: PreviewInfo, allow: Callable[[], None]) -> None:
+        super().__init__()
+        self.info = info
+        self.allow = allow
+
+
 class JlvApp(App):
     """JSONL Log Viewer."""
 
@@ -623,7 +697,7 @@ class JlvApp(App):
             elif panel.id == "detail-list" and self._document is not None:
                 value = self._document.strings.get(panel.index, "")
             if key == ">" and self._native_preview.available(value):
-                self._native_preview.open(value, self._native_failure)
+                self._native_preview.open(value, self._native_failure, self._native_confirmation)
                 return
             if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
                 changed = self.screen.decode() if key == ">" else self.screen.undo_decode()
@@ -803,6 +877,19 @@ class JlvApp(App):
             self.call_from_thread(self.bell)
         except RuntimeError:
             pass  # The app has already exited.
+
+    def _native_confirmation(self, info: PreviewInfo, allow: Callable[[], None]) -> None:
+        self.post_message(NativePreviewConfirmationRequested(info, allow))
+
+    def on_native_preview_confirmation_requested(self, event: NativePreviewConfirmationRequested) -> None:
+        if isinstance(self.screen, NativePreviewWarning):
+            return
+
+        def confirmed(allowed: bool | None) -> None:
+            if allowed:
+                event.allow()
+
+        self.push_screen(NativePreviewWarning(event.info), confirmed)
 
     def on_unmount(self) -> None:
         self._native_preview.cleanup()

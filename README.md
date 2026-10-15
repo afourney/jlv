@@ -124,11 +124,65 @@ and is offered only when `xdg-open` is on PATH on Linux, `open` is available on
 macOS, or `os.startfile` is available on Windows. Nothing opens until you press
 `>`. JSON string decoding and `<` undo continue to work as before.
 
-Opening decodes the payload in a background thread into a unique file in a
-per-session temporary directory. An explicit MIME type determines the extension;
-when omitted, `filetype` inspects at most 8 KiB of decoded header data. Unknown
-types fall back to text/plain (`.txt`). The hint inspects only the URI header,
-without decoding large payloads. Both base64 and percent-encoded payloads work.
+Opening first inspects at most 8 KiB of decoded header data in a background
+thread. The formats below open without an additional warning when the detected
+contents agree with the declared MIME type. MIME aliases use the fixed extension
+shown here, rather than a locally configured MIME-to-extension mapping. When
+MIME is omitted, recognizable media or readable UTF-8 text can open directly.
+
+| Format | Extension | Accepted MIME types |
+| --- | --- | --- |
+| JPEG | `.jpg` | `image/jpeg`, `image/pjpeg` |
+| PNG / APNG | `.png` | `image/png`, `image/apng`, `image/vnd.mozilla.apng` |
+| GIF | `.gif` | `image/gif` |
+| WebP | `.webp` | `image/webp` |
+| BMP | `.bmp` | `image/bmp`, `image/x-ms-bmp` |
+| TIFF | `.tif` | `image/tiff` |
+| Icon | `.ico` | `image/x-icon`, `image/vnd.microsoft.icon` |
+| AVIF | `.avif` | `image/avif` |
+| HEIC / HEIF | `.heic` | `image/heic`, `image/heif` |
+| JPEG 2000 | `.jpx` | `image/jpx`, `image/jp2` |
+| JPEG XR | `.jxr` | `image/vnd.ms-photo` |
+| MP3 | `.mp3` | `audio/mpeg`, `audio/mp3` |
+| WAV | `.wav` | `audio/wav`, `audio/wave`, `audio/x-wav`, `audio/vnd.wave` |
+| FLAC | `.flac` | `audio/flac`, `audio/x-flac` |
+| Ogg / Opus | `.ogg` | `audio/ogg`, `video/ogg`, `application/ogg`, `audio/opus` |
+| AAC | `.aac` | `audio/aac`, `audio/x-aac` |
+| M4A | `.m4a` | `audio/mp4`, `audio/x-m4a` |
+| AIFF | `.aiff` | `audio/aiff`, `audio/x-aiff` |
+| AMR | `.amr` | `audio/amr` |
+| MIDI | `.mid` | `audio/midi`, `audio/x-midi` |
+| MP4 | `.mp4` | `video/mp4` |
+| M4V | `.m4v` | `video/x-m4v` |
+| QuickTime | `.mov` | `video/quicktime` |
+| AVI | `.avi` | `video/x-msvideo`, `video/avi` |
+| Matroska | `.mkv` | `video/x-matroska` |
+| MPEG video | `.mpeg` | `video/mpeg` |
+| WebM | `.webm` | `video/webm` |
+| WMV | `.wmv` | `video/x-ms-wmv` |
+| FLV | `.flv` | `video/x-flv` |
+| 3GPP | `.3gp` | `video/3gpp` |
+| Plain text | `.txt` | `text/plain` |
+
+All other types—including SVG, HTML, PDF, Office documents, archives, scripts,
+and executables—show an **Allow / Cancel** warning. Unknown binary contents,
+unverified media, MIME/signature mismatches, and text prefixes containing markup,
+shebangs, desktop-entry headers, or batch-script markers also require consent.
+The warning shows the declared type, detected type, and extension, and explains
+that opening may execute code or invoke an unexpected application. **Cancel**
+has initial focus, so Enter cancels by default; Escape always cancels. **Allow**
+applies to this opening only. Canceling creates no file and never launches a handler.
+
+This is an explicit policy for common passive formats, not a guarantee that a
+file or its default handler is safe. The content check is bounded and does not
+sandbox the native application.
+
+After any required consent, full decoding runs in a background thread into a
+unique file in a per-session temporary directory. Non-allowlisted explicit MIME
+types retain their usual extension; unknown types fall back to `.txt` but still
+require a warning unless recognized as plain text. The hint inspects only the
+URI header, without decoding large payloads. Both base64 and percent-encoded
+payloads work.
 Malformed payloads, launch errors, and nonzero launcher exits within roughly
 500 ms ring the bell. Longer-running launchers are reaped in the background;
 JLV does not wait for or close the viewer.

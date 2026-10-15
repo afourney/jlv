@@ -11,7 +11,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from jlv import JlvApp
+from jlv import JlvApp, NativePreviewWarning, StringModal, StringView
 from jlv.data_uri import SIGNATURE_BYTES, DataURI, NativePreview, native_launcher
 from jlv.rows import RowView
 from jlv.source import JsonlFile
@@ -166,6 +166,125 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(children[0].returncode, 7)
 
 
+class PreviewPolicyTests(unittest.TestCase):
+    def info(self, mime, payload):
+        uri = DataURI.parse(f"data:{mime};base64," + base64.b64encode(payload).decode())
+        return uri.preview_info()
+
+    def test_real_media_signatures_and_plain_text(self):
+        for mime, payload, extension in [
+            ("image/png", PNG, ".png"),
+            ("", PNG, ".png"),
+            ("image/apng", PNG, ".png"),
+            ("image/pjpeg", b"\xff\xd8\xff\xdb" + b"\0" * 32, ".jpg"),
+            ("image/gif", b"GIF89a" + b"\0" * 32, ".gif"),
+            ("audio/x-wav", b"RIFF" + b"\0" * 4 + b"WAVE" + b"\0" * 32, ".wav"),
+            ("audio/ogg", b"OggS" + b"\0" * 32, ".ogg"),
+            ("video/mp4", b"\0\0\0\x18ftypisom" + b"\0" * 20, ".mp4"),
+            ("text/plain", "Hello, world! café".encode(), ".txt"),
+            ("", b"hello", ".txt"),
+            ("", b"", ".txt"),
+        ]:
+            with self.subTest(mime=mime, extension=extension):
+                info = self.info(mime, payload)
+                self.assertIsNone(info.warning)
+                self.assertEqual(info.extension, extension)
+
+    def test_active_unknown_and_mismatched_contents_require_consent(self):
+        for mime, payload in [
+            ("", b"MZ" + b"\0" * 32),
+            ("application/hta", b"<script>example</script>"),
+            ("text/html", b"<html>example</html>"),
+            ("image/svg+xml", b"<svg></svg>"),
+            ("application/pdf", b"%PDF-1.7"),
+            ("application/postscript", b"%!PS-Adobe"),
+            ("application/zip", b"PK\x03\x04" + b"\0" * 32),
+            ("application/msword", b"example"),
+            ("image/x-unknown", PNG),
+            ("application/octet-stream", PNG),
+            ("image/jpeg", PNG),
+            ("image/png", b"MZ" + b"\0" * 32),
+            ("text/plain", b"MZ" + b"\0" * 32),
+            ("image/png", b"not an image"),
+            ("", b"\0\0\0\0"),
+            ("", b"\xf0"),
+            ("text/plain", b"#!/bin/sh\nexample"),
+            ("text/plain", b"[Desktop Entry]\nExec=example"),
+            ("text/plain", b"<html>example</html>"),
+            ("text/plain", b"@echo off\nexample"),
+        ]:
+            with self.subTest(mime=mime, payload=payload[:20]):
+                self.assertIsNotNone(self.info(mime, payload).warning)
+
+    def test_os_mime_overrides_cannot_change_passive_extensions(self):
+        with patch("jlv.data_uri.mimetypes.guess_extension", return_value=".exe") as guess:
+            info = self.info("image/png", PNG)
+            self.assertEqual(info.extension, ".png")
+            self.assertIsNone(info.warning)
+            guess.assert_not_called()
+
+    def test_inspection_bounds_and_utf8_boundary(self):
+        uri = DataURI.parse("data:image/png;base64," + base64.b64encode(PNG + b"x" * 4_000_000).decode())
+        with patch.object(DataURI, "decode", side_effect=AssertionError), patch(
+            "jlv.data_uri.filetype.guess", wraps=__import__("filetype").guess,
+        ) as guess:
+            self.assertIsNone(uri.preview_info().warning)
+            self.assertLessEqual(len(guess.call_args.args[0]), SIGNATURE_BYTES)
+        self.assertIsNone(self.info("text/plain", b"a" * (SIGNATURE_BYTES - 1) + "é".encode()).warning)
+
+    def test_all_launchers_fail_closed_or_request_consent_before_decoding(self):
+        payloads = [
+            "data:;base64," + base64.b64encode(b"MZ" + b"\0" * 32).decode(),
+            "data:application/hta,example",
+        ]
+        for launcher in ["startfile", "/bin/xdg-open", "/usr/bin/open"]:
+            for payload in payloads:
+                with self.subTest(launcher=launcher, payload=payload):
+                    preview = NativePreview()
+                    preview.launcher = launcher
+                    self.addCleanup(preview.cleanup)
+                    failed, confirm = Mock(), Mock()
+                    with patch("jlv.data_uri.os.startfile", create=True) as start, patch(
+                        "jlv.data_uri.subprocess.Popen",
+                    ) as spawn, patch.object(DataURI, "decode", side_effect=AssertionError):
+                        preview._open(payload, failed)
+                        failed.assert_called_once()
+                        preview._open(payload, failed, confirm)
+                        confirm.assert_called_once()
+                        info, allow = confirm.call_args.args
+                        self.assertIsNotNone(info.warning)
+                        self.assertTrue(callable(allow))
+                        start.assert_not_called()
+                        spawn.assert_not_called()
+                        self.assertIsNone(preview.directory)
+
+    def test_approval_after_exit_does_not_decode_or_launch(self):
+        preview = NativePreview()
+        preview.launcher = "startfile"
+        failed, confirm = Mock(), Mock()
+        preview._open("data:application/hta,example", failed, confirm)
+        info, allow = confirm.call_args.args
+        self.assertIsNotNone(info.warning)
+        preview.cleanup()
+        finished = threading.Event()
+        real_launch = preview._launch
+
+        def launch(*args):
+            try:
+                real_launch(*args)
+            finally:
+                finished.set()
+
+        with patch.object(preview, "_launch", side_effect=launch), patch.object(
+            DataURI, "decode", side_effect=AssertionError,
+        ), patch("jlv.data_uri.os.startfile", create=True) as start:
+            allow()
+            self.assertTrue(finished.wait(1))
+            start.assert_not_called()
+            failed.assert_not_called()
+            self.assertIsNone(preview.directory)
+
+
 class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
     async def test_decode_does_not_block_ui_or_recreate_files_after_exit(self):
         entered, release, finished = threading.Event(), threading.Event(), threading.Event()
@@ -244,3 +363,106 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                         app._update_hint()
                         self.assertFalse(app.query_one("#hint-rack").display)
                     self.assertFalse(Path(temp).exists())
+
+
+class WarningAppTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        path = Path(directory.name) / "synthetic.jsonl"
+        self.payload = b"MZ" + b"\0" * 32
+        value = "data:;base64," + base64.b64encode(self.payload).decode()
+        path.write_text(json.dumps({"payload": value}) + "\n")
+        self.source = JsonlFile(path)
+        self.addCleanup(self.source.close)
+        self.app = JlvApp(self.source)
+        self.app._native_preview.launcher = "startfile"
+        self.launched = threading.Event()
+        start = patch("jlv.data_uri.os.startfile", side_effect=lambda path: self.launched.set(), create=True)
+        self.start = start.start()
+        self.addCleanup(start.stop)
+
+    async def focus_payload(self, pilot):
+        await pilot.press("tab")
+        right = self.app.query_one("#detail-list", RowView)
+        right.go_to_line(1)
+        await pilot.pause()
+        return right
+
+    async def warning(self, pilot):
+        for _ in range(100):
+            if isinstance(self.app.screen, NativePreviewWarning):
+                return self.app.screen
+            await pilot.pause(0.01)
+        self.fail("No native-opening warning appeared")
+
+    async def test_cancel_button_enter_and_escape_never_decode_or_launch(self):
+        with patch.object(DataURI, "decode", side_effect=AssertionError):
+            async with self.app.run_test(size=(100, 30)) as pilot:
+                right = await self.focus_payload(pilot)
+                for cancel in ["enter", "escape", "button"]:
+                    with self.subTest(cancel=cancel):
+                        await pilot.press(">")
+                        warning = await self.warning(pilot)
+                        self.assertEqual(self.app.focused.id, "native-cancel")
+                        self.assertEqual(warning.info.extension, ".exe")
+                        self.assertEqual(warning.info.detected_mime, "application/x-msdownload")
+                        if cancel == "button":
+                            await pilot.click("#native-cancel")
+                        else:
+                            await pilot.press(cancel)
+                        self.assertIs(self.app.focused, right)
+                        self.start.assert_not_called()
+                        self.assertIsNone(self.app._native_preview.directory)
+                        self.assertEqual(self.app._decoded, [])
+
+    async def test_allow_launches_exact_payload_and_asks_again_next_time(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            right = await self.focus_payload(pilot)
+            await pilot.press(">")
+            await self.warning(pilot)
+            self.start.assert_not_called()
+            self.assertIsNone(self.app._native_preview.directory)
+            await pilot.press("shift+tab")
+            self.assertEqual(self.app.focused.id, "native-allow")
+            await pilot.press("enter")
+            self.assertTrue(await asyncio.to_thread(self.launched.wait, 1))
+            self.start.assert_called_once()
+            path = Path(self.start.call_args.args[0])
+            self.assertEqual(path.suffix, ".exe")
+            self.assertEqual(path.read_bytes(), self.payload)
+            self.assertIs(self.app.focused, right)
+            await pilot.press(">")
+            await self.warning(pilot)
+            await pilot.press("escape")
+            self.start.assert_called_once()
+        self.assertFalse(path.exists())
+
+    async def test_string_inspector_warning_restores_focus_on_cancel_and_allow(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            await self.focus_payload(pilot)
+            await pilot.press("enter")
+            inspector = self.app.screen
+            self.assertIsInstance(inspector, StringModal)
+            await pilot.press(">")
+            await self.warning(pilot)
+            await pilot.press("escape")
+            self.assertIs(self.app.screen, inspector)
+            self.assertIsInstance(self.app.focused, StringView)
+            self.start.assert_not_called()
+            await pilot.press(">")
+            await self.warning(pilot)
+            await pilot.click("#native-allow")
+            self.assertTrue(await asyncio.to_thread(self.launched.wait, 1))
+            self.assertIs(self.app.screen, inspector)
+            self.assertIsInstance(self.app.focused, StringView)
+            self.assertEqual(inspector._decoded, [])
+
+    async def test_exit_with_pending_warning_never_creates_file(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            await self.focus_payload(pilot)
+            await pilot.press(">")
+            await self.warning(pilot)
+        self.assertTrue(self.app._native_preview._closed)
+        self.assertIsNone(self.app._native_preview.directory)
+        self.start.assert_not_called()
