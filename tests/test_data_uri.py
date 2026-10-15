@@ -204,7 +204,7 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                     app = JlvApp(source)
                     app._native_preview.launcher = "/test/open"
                     bells = []
-                    app.bell = lambda: bells.append(1)
+                    app.bell = lambda bells=bells: bells.append(1)
                     child = Mock()
                     child.wait.return_value = 3
                     with patch("jlv.data_uri.subprocess.Popen", return_value=child):
@@ -221,7 +221,7 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                 app = JlvApp(source)
                 app._native_preview.launcher = "/test/open"
                 bells = []
-                app.bell = lambda: bells.append(1)
+                app.bell = lambda bells=bells: bells.append(1)
                 with patch("jlv.data_uri.subprocess.Popen", side_effect=OSError) as spawn:
                     async with app.run_test(size=(100, 30)) as pilot:
                         await pilot.press("tab")
