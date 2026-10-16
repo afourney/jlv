@@ -12,6 +12,7 @@ dependencies = [
     "regex>=2024.11.6",
     "orjson>=3.11,<4",
     "filetype>=1.2,<2",
+    "platformdirs>=4",
 ]
 
 [project.scripts]

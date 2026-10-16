@@ -7,6 +7,7 @@ from bisect import bisect_left, bisect_right
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import ClassVar
 
 from rich.cells import cell_len
@@ -20,10 +21,13 @@ from textual.geometry import Offset, Region
 from textual.message import Message
 from textual.screen import ModalScreen
 from textual.timer import Timer
-from textual.widgets import Button, Static, TextArea
+from textual.widgets import Button, Input, OptionList, Static, TextArea
+from textual.widgets.option_list import Option
+from textual.worker import Worker
 
 from jlv.data_uri import NativePreview, PreviewInfo
 from jlv.rows import PanelKey, RowView
+from jlv.scripts import Script, ScriptResult, Selection, config_path, execute, load_scripts
 from jlv.search import SearchBar, text_location
 from jlv.source import JsonlFile
 
@@ -101,6 +105,8 @@ class PrettyDocument:
             block_start = len(lines)
             if isinstance(value, (dict, list)):
                 blocks.append((block_start, block_start))
+            # Every row naming a value maps to its path; containers use both delimiter rows.
+            paths[len(lines)] = path
             if isinstance(value, (dict, list)) and value:
                 opening, closing = ("{", "}") if isinstance(value, dict) else ("[", "]")
                 lines.append((indent + prefix + opening, None))
@@ -118,13 +124,13 @@ class PrettyDocument:
                         "," if i < len(value) - 1 else "",
                         (*path, key),
                     )
+                paths[len(lines)] = path
                 lines.append((indent + closing + suffix, None))
             else:
                 kind = None
                 if isinstance(value, str):
                     kind = "string"
                     strings[len(lines)] = value
-                    paths[len(lines)] = path
                 elif value is None:
                     kind = "null"
                 elif isinstance(value, bool):
@@ -158,9 +164,19 @@ class PrettyDocument:
             self._expandable[row] = decode_json(self.strings[row]) is not None
         return self._expandable[row]
 
+    def selected(self, row: int) -> tuple[tuple[str | int, ...], object] | None:
+        """The path and value named by ``row``, or None for rows such as blank padding."""
+        path = self.paths.get(row)
+        if path is None:
+            return None
+        value = self.value
+        for key in path:
+            value = value[key]  # type: ignore[index]
+        return path, value
+
     def decode_string(self, row: int) -> PrettyDocument | None:
         """Return a copy with the string at ``row`` replaced by its decoded JSON, if any."""
-        if row not in self.paths:
+        if row not in self.strings:
             return None
         decoded = decode_json(self.strings[row])
         if decoded is None:
@@ -274,6 +290,10 @@ class StringView(TextArea):
         return line
 
 
+# The inspector shows a plain string, rather than formatted JSON of a parsed value.
+NO_DATA = object()
+
+
 class StringModal(ModalScreen[None]):
     """A read-only, wrapped document with viewport-based rendering."""
 
@@ -304,14 +324,24 @@ class StringModal(ModalScreen[None]):
     }
     """
 
-    def __init__(self, value: str) -> None:
+    def __init__(
+        self,
+        value: str,
+        title: str | None = None,
+        *,
+        origin: tuple[object, tuple[str | int, ...]] | None = None,
+        data: object = NO_DATA,
+    ) -> None:
         super().__init__()
         self.value = value
-        # The decoded object or array shown as formatted JSON, if any, and earlier states.
-        self._data: dict | list | None = None
-        self._decoded: list[tuple[str, dict | list | None]] = []
+        self._border_title = title
+        # The record and path this string came from, if it is shown unchanged from a record.
+        self.origin = origin
+        # The parsed JSON value shown as formatted JSON, or NO_DATA, and earlier states.
+        self._data = data
+        self._decoded: list[tuple[str, object]] = []
         # What the next decode would show, if anything; computed for the border hint.
-        self._next: tuple[str, dict | list | None] | None = None
+        self._next: tuple[str, object] | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="inspector"):
@@ -319,6 +349,8 @@ class StringModal(ModalScreen[None]):
             yield SearchBar(1, self._search_text, self._search_origin, "this string")
 
     def on_mount(self) -> None:
+        if self._border_title:
+            self.query_one("#inspector").border_title = self._border_title
         # Decoding huge strings is slow; let the loading placeholder paint first.
         self.call_after_refresh(self._update_hint)
 
@@ -326,19 +358,19 @@ class StringModal(ModalScreen[None]):
         self.app.post_message(self.Closed())
 
     def _update_hint(self) -> None:
-        if self._data is None:
+        if self._data is NO_DATA:
             decoded = decode_json(self.value)
             if decoded is None:
                 self._next = None
             elif isinstance(decoded, str):
-                self._next = decoded, None
+                self._next = decoded, NO_DATA
             else:
                 self._next = json.dumps(decoded, indent=2, ensure_ascii=False), decoded
         else:
             data, changed = decode_nested(self._data)
-            self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None  # type: ignore[assignment]
+            self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None
         hints = []
-        if self._data is None and self.app._native_preview.available(self.value):
+        if self._data is NO_DATA and self.app._native_preview.available(self.value):
             hints.append("Press > to open natively")
         elif self._next is not None:
             hints.append("Press > to decode")
@@ -382,7 +414,7 @@ class StringModal(ModalScreen[None]):
         self._show(*self._decoded.pop())
         return True
 
-    def _show(self, value: str, data: dict | list | None) -> None:
+    def _show(self, value: str, data: object) -> None:
         self.value = value
         self._data = data
         self.query_one(SearchBar).cancel()
@@ -464,6 +496,113 @@ class NativePreviewWarning(ModalScreen[bool]):
         self.dismiss(event.button.id == "native-allow")
 
 
+class ScriptPicker(ModalScreen[Script | None]):
+    """Choose a configured script; typing filters by name."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("down", "move(1)", show=False, priority=True),
+        Binding("up", "move(-1)", show=False, priority=True),
+    ]
+    DEFAULT_CSS = """
+    ScriptPicker {
+        align: center middle;
+    }
+    ScriptPicker #script-picker {
+        width: 60;
+        max-width: 90%;
+        height: auto;
+        max-height: 80%;
+        border: thick $accent;
+        background: $surface;
+        padding: 0 1;
+    }
+    ScriptPicker OptionList {
+        height: auto;
+        max-height: 20;
+        border: none;
+    }
+    """
+
+    def __init__(self, scripts: list[Script]) -> None:
+        super().__init__()
+        self.scripts = scripts
+        self._shown = scripts
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="script-picker"):
+            yield Input(placeholder="Filter scripts", id="script-filter")
+            yield OptionList(*self._options(), id="script-options")
+
+    def on_mount(self) -> None:
+        self.query_one("#script-picker").border_title = "Run script"
+        self.query_one(OptionList).highlighted = 0
+
+    def _options(self) -> list[Option]:
+        return [Option(script.name) for script in self._shown]
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        text = event.value.casefold()
+        self._shown = [script for script in self.scripts if text in script.name.casefold()]
+        options = self.query_one(OptionList)
+        options.clear_options()
+        options.add_options(self._options())
+        options.highlighted = 0 if self._shown else None
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        event.stop()
+        index = self.query_one(OptionList).highlighted
+        if index is not None:
+            self.dismiss(self._shown[index])
+
+    def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
+        event.stop()
+        self.dismiss(self._shown[event.option_index])
+
+    def action_move(self, delta: int) -> None:
+        options = self.query_one(OptionList)
+        if self._shown:
+            current = options.highlighted or 0
+            options.highlighted = max(0, min(current + delta, len(self._shown) - 1))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class ScriptRunning(ModalScreen[None]):
+    """Shown while a script runs; Escape stops it."""
+
+    BINDINGS: ClassVar[list[Binding]] = [Binding("escape", "cancel", "Cancel")]
+    DEFAULT_CSS = """
+    ScriptRunning {
+        align: center middle;
+    }
+    ScriptRunning Static {
+        width: auto;
+        max-width: 90%;
+        border: thick $accent;
+        background: $surface;
+        padding: 1 2;
+    }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self.script_name = name
+        self.worker: Worker | None = None
+
+    def compose(self) -> ComposeResult:
+        yield Static(
+            f"Running {self.script_name}...\nPress Escape to cancel.",
+            markup=False,
+        )
+
+    def action_cancel(self) -> None:
+        if self.worker is not None:
+            self.worker.cancel()
+        self.dismiss()
+
+
 class NativePreviewConfirmationRequested(Message):
     def __init__(self, info: PreviewInfo, allow: Callable[[], None]) -> None:
         super().__init__()
@@ -539,9 +678,10 @@ class JlvApp(App):
     }
     """
 
-    def __init__(self, source: JsonlFile) -> None:
+    def __init__(self, source: JsonlFile, scripts_path: Path | None = None) -> None:
         super().__init__()
         self.source = source
+        self.scripts_path = scripts_path or config_path()
         self._native_preview = NativePreview()
         self._documents: OrderedDict[int, PrettyDocument] = OrderedDict()
         self._document: PrettyDocument | None = None
@@ -732,10 +872,12 @@ class JlvApp(App):
         elif key in {"n", "N"}:
             self._remember_input_target()
             self.screen.query_one(SearchBar).find(backwards=key == "N")
+        elif key == "|":
+            self._pick_script(panel)
         elif key in {">", "<"}:
             value = ""
             if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
-                if self.screen._data is None:
+                if self.screen._data is NO_DATA:
                     value = self.screen.value
             elif panel.id == "detail-list" and self._document is not None:
                 value = self._document.strings.get(panel.index, "")
@@ -916,10 +1058,113 @@ class JlvApp(App):
         if self._document is not None:
             value = self._document.strings.get(index)
             if value is not None:
-                self.push_screen(StringModal(value))
+                origin = self._document.value, self._document.paths[index]
+                self.push_screen(StringModal(value, origin=origin))
                 self.query_one(SearchBar).cancel()
                 return True
         return False
+
+    def _selection(self, panel: RowView | StringView) -> Selection | None:
+        """Snapshot the displayed record and the selected value, or the inspector's contents."""
+        if self._document is None or self._detail_idx is None:
+            return None
+        line = self._detail_idx + 1
+        if isinstance(panel, StringView):
+            modal = self.screen
+            if not isinstance(modal, StringModal):
+                return None
+            if modal.origin is not None and not modal._decoded:
+                record, path = modal.origin
+                return Selection(record, path, modal.value, self.source.path, line)
+            # Decoded text and script results stand alone: they are the whole record.
+            value = modal.value if modal._data is NO_DATA else modal._data
+            return Selection(value, (), value, self.source.path, line)
+        if panel.id == "lines-list":
+            selected = (), self._document.value
+        else:
+            selected = self._document.selected(panel.index)
+            if selected is None:
+                return None
+        path, value = selected
+        return Selection(self._document.value, path, value, self.source.path, line)
+
+    def _pick_script(self, panel: RowView | StringView) -> None:
+        selection = self._selection(panel)
+        if selection is None:
+            self.bell()
+            return
+        scripts, errors = load_scripts(self.scripts_path)
+        for error in errors:
+            self.notify(error, title="Script configuration error", severity="error")
+        available = [script for script in scripts if script.applies(selection)]
+        if not available:
+            if not scripts and not errors:
+                self.notify(
+                    f"Add scripts to {self.scripts_path}", title="No scripts configured", timeout=5
+                )
+            elif scripts:
+                self.notify("No configured script applies to this selection.", title="Scripts")
+            return
+        self.query_one(SearchBar).cancel()
+
+        def chosen(script: Script | None) -> None:
+            if script is not None:
+                self._run_script(script, selection)
+
+        self.push_screen(ScriptPicker(available), chosen)
+
+    def _run_script(self, script: Script, selection: Selection) -> None:
+        inspector = isinstance(self.screen, StringModal)
+        running = ScriptRunning(script.name)
+        self.push_screen(running)
+
+        async def work() -> None:
+            try:
+                result = await execute(script, selection)
+            except Exception as error:  # noqa: BLE001 - never leave the running dialog open
+                result = ScriptResult(
+                    f"{script.name}: failed", "text/plain", f"{type(error).__name__}: {error}", True
+                )
+            if running.is_attached:
+                running.dismiss()
+                self._show_script_result(result, inspector)
+
+        running.worker = self.run_worker(work(), group="scripts", exit_on_error=False)
+
+    def _show_script_result(self, result: ScriptResult, inspector: bool) -> None:
+        """Show text in a new inspector; JSON replaces the record, or opens over an inspector."""
+        if result.stderr.strip() and not result.error:
+            stderr = result.stderr.strip()
+            self.notify(
+                stderr if len(stderr) <= 500 else stderr[:500] + "...",
+                title=f"{result.title}: stderr",
+                severity="warning",
+                markup=False,
+            )
+        if result.mime != "application/json" or result.error:
+            self.push_screen(StringModal(str(result.content), title=result.title))
+            return
+        if inspector:
+            content = result.content
+            if isinstance(content, str):
+                # A JSON string is shown, and sent onward, as the string itself.
+                self.push_screen(StringModal(content, title=result.title))
+            else:
+                text = json.dumps(content, indent=2, ensure_ascii=False)
+                self.push_screen(StringModal(text, title=result.title, data=content))
+            return
+        right = self.query_one("#detail-list", RowView)
+        if self._document is not None:
+            # A JSON result replaces the displayed record, like a decode; < restores it.
+            self._decoded.append((self._document, right.index))
+        self._show_document(PrettyDocument.from_value(result.content), 0)
+        right.scroll_to(x=0, y=0, animate=False, force=True)
+        right.focus()
+        self.notify(
+            "Press < to return; changing records resets.",
+            title=f"Showing {result.title}",
+            timeout=3,
+        )
 
     def _native_failure(self) -> None:
         with contextlib.suppress(RuntimeError):  # The app has already exited.

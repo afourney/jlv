@@ -39,6 +39,7 @@ class JsonlFile:
     """Incrementally validated JSONL with bounded previews and a byte-offset index."""
 
     def __init__(self, path: str | Path, *, eager: bool = True) -> None:
+        self.path = os.path.abspath(path)
         self._file: BinaryIO = open(path, "rb", buffering=1024 * 1024)  # noqa: SIM115 - closed by close()
         self._read_lock = Lock()
         self._cancelled = Event()

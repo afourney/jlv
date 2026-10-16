@@ -66,6 +66,7 @@ Open a string to read its decoded, word-wrapped contents:
 | Enter | Drill down: from the record list into the JSON preview, then into a selected string |
 | Click | Select a record, or inspect a string in the JSON preview |
 | > / < | Decode a JSON-encoded string or open encoded data natively / undo the last JSON decode |
+| \| | Run a [custom script](#custom-scripts) on the selected value or record |
 | Mouse wheel / scrollbars | Scroll the panel under the pointer |
 | Ctrl+F, /, ? | Open search (both / and ? search forward) |
 | Enter in search | Find next match and return focus to the panel |
@@ -205,6 +206,97 @@ JLV does not wait for or close the viewer.
 Temporary files are removed on normal JLV exit, with best-effort cleanup of
 locked files on Windows. A viewer may lose access to its file after JLV closes;
 a crash may leave temporary files behind.
+
+## Custom scripts
+
+Press `|` in the JSON preview to run a script on the selected value, in the
+record list to run it on the whole record, or in the string inspector to run it
+on the string being shown. Any row can be selected: strings, numbers, booleans,
+null, and objects or arrays (from either of their delimiter rows). A picker lists
+the scripts that apply; type to filter, then press Enter.
+
+Scripts are declared in `scripts.toml` in JLV's user configuration directory:
+`~/.config/jlv/` on Linux, `~/Library/Application Support/jlv/` on macOS, and
+`%LOCALAPPDATA%\jlv\` on Windows. JLV rereads the file each time the picker
+opens. For example, to convert HTML fields to Markdown with
+[markitdown](https://github.com/microsoft/markitdown):
+
+```toml
+[[script]]
+name = "HTML → Markdown"
+command = ["markitdown", "-x", "html"]
+output = "text/markdown"
+applies_to = "string"
+match = '^\s*<'
+
+[[script]]
+name = "Validate record"
+command = ["python", "./validate.py"]
+input = "envelope"
+applies_to = "record"
+```
+
+| Field | Meaning |
+| --- | --- |
+| `name` | Shown in the picker. Required. |
+| `command` | Program and arguments, run directly without a shell. Required. |
+| `input` | What is written to stdin: `value` (default) or `envelope`. |
+| `output` | MIME type of stdout: `text/plain` (default), `text/markdown`, or `application/json`. |
+| `applies_to` | `string`, `container`, `record`, or `any` (default), or a list of these. |
+| `match` | Optional regular expression; the script is offered only when it matches the value. |
+| `timeout` | Seconds before the script is stopped. Defaults to 30. |
+
+Because no shell is involved, JLV expands only a leading `~` in each `command`
+element, and resolves elements starting with `./` or `../` against the folder
+containing `scripts.toml`. Scripts run in the directory JLV was started from,
+with `JLV_FILE` and `JLV_LINE` set to the input file and 1-based line number.
+
+In `value` mode, a selected string is sent raw as UTF-8, without JSON quotes or
+escapes, so tools like markitdown, pandoc, or `xmllint` work unchanged. Other
+values are sent as JSON text. In `envelope` mode, stdin is a JSON object:
+
+```json
+{"record": {"id": 7, "body": "<p>Hi</p>"}, "value": "<p>Hi</p>", "path": "/body",
+ "source": {"file": "/data/log.jsonl", "line": 42}}
+```
+
+`record` is the record as currently displayed, including any `>` decoding or an
+earlier script's JSON result. `path` is a JSON Pointer into it that resolves to
+`value`; the whole record has the path `""`. `source` records where the record
+came from. In the string inspector, an unchanged string keeps its record and
+path. Once the inspector shows decoded text or a script's result, that content
+stands alone: it is sent as both `record` and `value`, with the path `""`, and
+`applies_to = "record"` matches it alongside its own type.
+
+Text and Markdown output opens in a new string inspector, where search and copy
+work as usual and `|` runs another script on the result; Markdown is shown as
+text. Escape returns to where the script was run. JSON output must be exactly
+one JSON value (wrap multiple values in an array, for example with `jq -s`). Run
+from a main panel, it replaces the displayed record, so you can browse, decode,
+search within, or run another script on it; `<` returns to the previous view,
+and changing records restores the original. Run from the string inspector, it
+opens as formatted JSON in a new inspector.
+
+A script can also choose its own title and type by printing a result envelope.
+Only an object with `"$jlv": "result"` and `content` is treated this way; any
+other JSON is ordinary output:
+
+```json
+{"$jlv": "result", "title": "Schema validation", "mime": "text/markdown", "content": "Valid."}
+```
+
+With `"mime": "application/json"`, `content` is the result value itself, and is
+not parsed again: `"content": "42"` is the string `"42"`, not a number.
+
+While a script runs, Escape stops it. Escape and timeouts stop the script along
+with any processes it started. A nonzero exit, timeout, or invalid JSON output
+opens the inspector with the exit status and whatever the script wrote to stderr
+and stdout. Stderr from a successful run appears as a notification. Scripts never
+change the file.
+
+Scripts are trusted local programs that run with your permissions and network
+access. JLV runs only scripts listed in your own configuration, never anything
+found in the files you open.
 
 ## Large files
 
