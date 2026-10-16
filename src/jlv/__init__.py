@@ -1119,7 +1119,12 @@ class JlvApp(App):
         self.push_screen(running)
 
         async def work() -> None:
-            result = await execute(script, selection)
+            try:
+                result = await execute(script, selection)
+            except Exception as error:  # noqa: BLE001 - never leave the running dialog open
+                result = ScriptResult(
+                    f"{script.name}: failed", "text/plain", f"{type(error).__name__}: {error}", True
+                )
             if running.is_attached:
                 running.dismiss()
                 self._show_script_result(result, inspector)

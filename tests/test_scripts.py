@@ -8,6 +8,7 @@ import sys
 import tempfile
 import time
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from jlv import (
@@ -24,6 +25,7 @@ from jlv.scripts import (
     Completed,
     Script,
     Selection,
+    execute,
     json_pointer,
     load_scripts,
     parse_output,
@@ -231,14 +233,37 @@ class OutputTests(unittest.TestCase):
 
 
 # Starts a descendant that inherits stdout/stderr and outlives the script, then records
-# the descendant's pid in the file named by the first argument.
+# the descendant's pid in the file named by the first argument. With a second argument,
+# the script exits at once, leaving the descendant holding its pipes.
 TREE = (
     "import subprocess, sys, time\n"
     "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
     "sys.stderr.write('warming up\\n'); sys.stderr.flush()\n"
     "open(sys.argv[1], 'w').write(str(child.pid))\n"
-    "time.sleep(30)\n"
+    "time.sleep(0 if len(sys.argv) > 2 else 30)\n"
 )
+
+
+def running(pid: int) -> bool:
+    if os.name == "nt":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32")
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        kernel32.GetExitCodeProcess(ctypes.c_void_p(handle), ctypes.byref(code))
+        kernel32.CloseHandle(ctypes.c_void_p(handle))
+        return code.value == 259  # STILL_ACTIVE
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    # An orphan killed by its group may briefly remain a zombie before init reaps it.
+    stat = Path(f"/proc/{pid}/stat")
+    return not (stat.exists() and stat.read_text().split()[2] == "Z")
 
 
 class RunTests(unittest.IsolatedAsyncioTestCase):
@@ -249,20 +274,11 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.script = Script("tree", (sys.executable, "-c", TREE, str(self.pid_file)))
 
     def assert_gone(self, pid: int) -> None:
-        if os.name != "posix":
-            return
-        # The orphaned descendant is reaped by init, possibly after a moment as a zombie.
-        stat = Path(f"/proc/{pid}/stat")
         deadline = time.monotonic() + 3
-        while time.monotonic() < deadline:
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
-                return
-            if stat.exists() and stat.read_text().split()[2] == "Z":
-                return
+        while running(pid):
+            if time.monotonic() > deadline:
+                self.fail(f"descendant {pid} is still running")
             time.sleep(0.05)
-        self.fail(f"descendant {pid} is still running")
 
     async def wait_for_pid(self) -> int:
         deadline = time.monotonic() + 10
@@ -290,6 +306,48 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertLess(time.monotonic() - start, 3)
         self.assert_gone(pid)
+
+    async def test_timeout_kills_descendants_after_the_script_exits(self):
+        command = (*self.script.command, "exit")
+        completed = await run(Script("tree", command, timeout=3.0), selection())
+        # The script exited, but its descendant kept stdout open until the timeout.
+        self.assertTrue(completed.timed_out)
+        self.assert_gone(int(self.pid_file.read_text()))
+
+    async def test_cancelling_during_launch_kills_what_started(self):
+        launched = asyncio.Event()
+        real = asyncio.create_subprocess_exec
+
+        async def slow_launch(*args, **kwargs):
+            # The process exists, but the launch hasn't returned it yet.
+            process = await real(*args, **kwargs)
+            launched.set()
+            await asyncio.sleep(0.5)
+            return process
+
+        with unittest.mock.patch("asyncio.create_subprocess_exec", slow_launch):
+            task = asyncio.ensure_future(run(self.script, selection()))
+            await launched.wait()
+            pid = await self.wait_for_pid()
+            start = time.monotonic()
+            task.cancel()
+            with self.assertRaises(asyncio.CancelledError):
+                await task
+        self.assertLess(time.monotonic() - start, 3)
+        self.assert_gone(pid)
+
+    async def test_unencodable_value_fails_before_launch(self):
+        marker = self.pid_file.with_name("launched")
+        command = (sys.executable, "-c", f"open({str(marker)!r}, 'w').close()")
+        result = await execute(Script("touch", command), selection("bad \ud800"))
+        self.assertTrue(result.error)
+        self.assertIn("surrogates", result.content)
+        self.assertFalse(marker.exists())
+        # Envelopes escape the same value as valid JSON instead.
+        echo = (sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())")
+        result = await execute(Script("echo", echo, input="envelope"), selection("bad \ud800"))
+        self.assertFalse(result.error)
+        self.assertEqual(json.loads(result.content)["value"], "bad \ud800")
 
     async def test_large_input_is_not_deadlocked(self):
         script = Script(

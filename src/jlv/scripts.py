@@ -51,7 +51,10 @@ class Script:
 
 def _expand(arg: str, base: Path) -> str:
     """Expand a leading ``~``, and resolve ``./`` and ``../`` against the config directory."""
-    arg = os.path.expanduser(arg)
+    if arg.startswith("~"):
+        expanded = os.path.expanduser(arg)
+        # Normalize separators, e.g. C:\Users\me/x on Windows, once the home path is known.
+        return str(Path(expanded)) if expanded != arg else arg
     if arg.startswith(("./", "../")) or (os.sep == "\\" and arg.startswith((".\\", "..\\"))):
         return str((base / arg).resolve())
     return arg
@@ -160,15 +163,35 @@ class Selection:
         return json.dumps(self.value, ensure_ascii=False)
 
     def payload(self, mode: str) -> bytes:
+        if mode == "value" and isinstance(self.value, str):
+            try:
+                return self.value.encode("utf-8")
+            except UnicodeEncodeError as error:
+                raise PayloadError(
+                    "The selected string contains unpaired surrogates, which can't be sent as "
+                    'UTF-8. Use input = "envelope" to receive it as escaped JSON.'
+                ) from error
         if mode == "value":
-            return self.text.encode("utf-8")
+            return _json_bytes(self.value)
         envelope = {
             "record": self.record,
             "value": self.value,
             "path": json_pointer(self.path),
             "source": {"file": self.file, "line": self.line},
         }
-        return json.dumps(envelope, ensure_ascii=False).encode("utf-8")
+        return _json_bytes(envelope)
+
+
+class PayloadError(ValueError):
+    """The selection can't be written to the script's stdin."""
+
+
+def _json_bytes(data: object) -> bytes:
+    try:
+        return json.dumps(data, ensure_ascii=False).encode("utf-8")
+    except UnicodeEncodeError:
+        # Unpaired surrogates have no UTF-8 form, but \u escapes keep them as valid JSON.
+        return json.dumps(data).encode("ascii")
 
 
 @dataclass(frozen=True)
@@ -194,23 +217,15 @@ KILL_GRACE = 2.0
 
 async def run(script: Script, selection: Selection) -> Completed:
     """Run ``script`` without a shell; a timeout or cancellation kills its process tree."""
-    executable = shutil.which(script.command[0]) or script.command[0]
-    env = {**os.environ, "JLV_FILE": selection.file, "JLV_LINE": str(selection.line)}
-    process = await asyncio.create_subprocess_exec(
-        executable,
-        *script.command[1:],
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        env=env,
-        # Its own process group, so descendants can be killed together.
-        start_new_session=os.name == "posix",
-    )
+    # Serialize first: nothing may fail between launching the process and guarding it.
+    payload = selection.payload(script.input)
+    process = await _spawn(script, selection)
+    tree = _ProcessTree(process)
     stdout, stderr = bytearray(), bytearray()
     # Feed stdin while draining both pipes, so large inputs can't deadlock, and keep
     # whatever was captured if the script times out.
     tasks = [
-        asyncio.ensure_future(_feed(process.stdin, selection.payload(script.input))),
+        asyncio.ensure_future(_feed(process.stdin, payload)),
         asyncio.ensure_future(_drain(process.stdout, stdout)),
         asyncio.ensure_future(_drain(process.stderr, stderr)),
     ]
@@ -219,12 +234,42 @@ async def run(script: Script, selection: Selection) -> Completed:
             await asyncio.gather(*tasks)
             await process.wait()
     except TimeoutError:
-        await _kill(process, tasks)
+        await tree.kill(tasks)
         return Completed(None, bytes(stdout), bytes(stderr), timed_out=True)
     except BaseException:
-        await _kill(process, tasks)
+        await tree.kill(tasks)
         raise
+    finally:
+        tree.close()
     return Completed(process.returncode, bytes(stdout), bytes(stderr))
+
+
+async def _spawn(script: Script, selection: Selection) -> asyncio.subprocess.Process:
+    executable = shutil.which(script.command[0]) or script.command[0]
+    env = {**os.environ, "JLV_FILE": selection.file, "JLV_LINE": str(selection.line)}
+    spawn = asyncio.ensure_future(
+        asyncio.create_subprocess_exec(
+            executable,
+            *script.command[1:],
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+            # Its own process group, so descendants can be killed together.
+            start_new_session=os.name == "posix",
+        )
+    )
+    try:
+        # Cancelling a launch midway makes asyncio wait for the pipes to close, which
+        # descendants can hold open indefinitely. Let it finish, then kill what it started.
+        return await asyncio.shield(spawn)
+    except asyncio.CancelledError:
+        done, _ = await asyncio.wait({spawn}, timeout=KILL_GRACE)
+        if spawn in done and not spawn.cancelled() and spawn.exception() is None:
+            tree = _ProcessTree(spawn.result())
+            await tree.kill([])
+            tree.close()
+        raise
 
 
 async def _feed(stream: asyncio.StreamWriter | None, data: bytes) -> None:
@@ -244,46 +289,125 @@ async def _drain(stream: asyncio.StreamReader | None, sink: bytearray) -> None:
         sink += chunk
 
 
-async def _kill(process: asyncio.subprocess.Process, tasks: list[asyncio.Future]) -> None:
-    """Kill the process and its descendants, waiting a bounded time for cleanup."""
-    for task in tasks:
-        task.cancel()
-    await _kill_tree(process)
-    try:
-        # Descendants that escaped the group can hold the pipes open indefinitely.
-        await asyncio.wait_for(asyncio.shield(process.wait()), KILL_GRACE)
-    except TimeoutError:
-        transport = getattr(process, "_transport", None)
-        if transport is not None:
-            transport.close()
-    await asyncio.gather(*tasks, return_exceptions=True)
+class _ProcessTree:
+    """A script and its descendants, which can be killed even after the script exits.
+
+    On POSIX the script leads its own process group. On Windows it is assigned to a job
+    object; descendants join the job when they start, and it tracks them by membership
+    rather than by parent, so they are found even once the script has exited. (A process
+    started in the moment before the script joins its job is not tracked.)
+    """
+
+    def __init__(self, process: asyncio.subprocess.Process) -> None:
+        self.process = process
+        self._job = _WindowsJob.create(process.pid) if os.name == "nt" else None
+
+    async def kill(self, tasks: list[asyncio.Future]) -> None:
+        """Kill the whole tree, waiting a bounded time for cleanup."""
+        for task in tasks:
+            task.cancel()
+        await self._kill_tree()
+        process = self.process
+        try:
+            # Descendants that escaped the tree can hold the pipes open indefinitely.
+            await asyncio.wait_for(asyncio.shield(process.wait()), KILL_GRACE)
+        except TimeoutError:
+            transport = getattr(process, "_transport", None)
+            if transport is not None:
+                transport.close()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _kill_tree(self) -> None:
+        if os.name == "posix":
+            # The group outlives its leader while any descendant remains.
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(self.process.pid, signal.SIGKILL)
+        elif self._job is not None:
+            self._job.terminate()
+        elif self.process.returncode is None:
+            # Without a job, taskkill /T can only follow the tree from a live parent.
+            with contextlib.suppress(OSError):
+                killer = await asyncio.create_subprocess_exec(
+                    "taskkill",
+                    "/F",
+                    "/T",
+                    "/PID",
+                    str(self.process.pid),
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(killer.wait(), KILL_GRACE)
+        with contextlib.suppress(ProcessLookupError):
+            self.process.kill()
+
+    def close(self) -> None:
+        if self._job is not None:
+            self._job.close()
+            self._job = None
 
 
-async def _kill_tree(process: asyncio.subprocess.Process) -> None:
-    if os.name == "posix":
-        with contextlib.suppress(ProcessLookupError, PermissionError):
-            os.killpg(process.pid, signal.SIGKILL)
-    elif process.returncode is None:
-        # taskkill /T follows the tree from a live parent, so run it before kill().
-        with contextlib.suppress(OSError):
-            killer = await asyncio.create_subprocess_exec(
-                "taskkill",
-                "/F",
-                "/T",
-                "/PID",
-                str(process.pid),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(killer.wait(), KILL_GRACE)
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
+class _WindowsJob:
+    """A Windows job object holding one script's process tree."""
+
+    PROCESS_TERMINATE = 0x0001
+    PROCESS_SET_QUOTA = 0x0100
+
+    def __init__(self, kernel32: object, handle: int) -> None:
+        self._kernel32 = kernel32
+        self._handle = handle
+
+    @classmethod
+    def create(cls, pid: int) -> _WindowsJob | None:
+        """Put ``pid`` in a new job; None if Windows refuses, falling back to taskkill."""
+        try:
+            return cls._create(pid)
+        except (OSError, AttributeError):
+            return None
+
+    @classmethod
+    def _create(cls, pid: int) -> _WindowsJob | None:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
+        kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+        kernel32.CreateJobObjectW.argtypes = (wintypes.LPVOID, wintypes.LPCWSTR)
+        kernel32.OpenProcess.restype = wintypes.HANDLE
+        kernel32.OpenProcess.argtypes = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD)
+        kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+        kernel32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+        kernel32.TerminateJobObject.restype = wintypes.BOOL
+        kernel32.TerminateJobObject.argtypes = (wintypes.HANDLE, wintypes.UINT)
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+
+        job = kernel32.CreateJobObjectW(None, None)
+        if not job:
+            return None
+        process = kernel32.OpenProcess(cls.PROCESS_TERMINATE | cls.PROCESS_SET_QUOTA, False, pid)
+        assigned = bool(process) and kernel32.AssignProcessToJobObject(job, process)
+        if process:
+            kernel32.CloseHandle(process)
+        if not assigned:
+            kernel32.CloseHandle(job)
+            return None
+        return cls(kernel32, job)
+
+    def terminate(self) -> None:
+        self._kernel32.TerminateJobObject(self._handle, 1)  # type: ignore[attr-defined]
+
+    def close(self) -> None:
+        # Closing the handle leaves any surviving processes running, as on POSIX.
+        self._kernel32.CloseHandle(self._handle)  # type: ignore[attr-defined]
 
 
 async def execute(script: Script, selection: Selection) -> ScriptResult:
     try:
         completed = await run(script, selection)
+    except PayloadError as error:
+        return ScriptResult(
+            f"{script.name}: could not send the selection", "text/plain", str(error), error=True
+        )
     except OSError as error:
         return ScriptResult(
             f"{script.name}: could not start",

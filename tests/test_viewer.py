@@ -14,7 +14,7 @@ from unittest.mock import patch
 from rich.cells import cell_len
 from textual.geometry import Offset
 from textual.selection import Selection
-from textual.widgets import Input, Static, TextArea
+from textual.widgets import Input, Static
 
 from jlv import JlvApp, PrettyDocument, StringModal, StringView, main
 from jlv.rows import RowView
@@ -481,7 +481,12 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.press("enter")
                     self.assertIsInstance(app.screen, StringModal)
                     self.assertEqual(app.screen.value, text)
-                    self.assertEqual(app.screen.query_one(TextArea).text, text)
+                    inspector = app.screen.query_one(StringView)
+                    # Loading is deferred until after the first inspector refresh.
+                    async with asyncio.timeout(5):
+                        while inspector._pending_value is not None:
+                            await asyncio.sleep(0.005)
+                    self.assertEqual(inspector.text, text)
                     await pilot.press("escape")
                 left.index = 3
                 await pilot.pause()
