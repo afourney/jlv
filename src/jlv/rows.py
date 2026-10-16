@@ -43,6 +43,7 @@ class PanelKey(Message):
             "%",
             ">",
             "<",
+            "|",
         }:
             event.stop()
             event.prevent_default()
