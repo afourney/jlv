@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -187,8 +188,12 @@ class Completed:
     timed_out: bool = False
 
 
+# How long to wait for a killed process tree to be reaped before abandoning its pipes.
+KILL_GRACE = 2.0
+
+
 async def run(script: Script, selection: Selection) -> Completed:
-    """Run ``script`` without a shell; cancelling kills the process."""
+    """Run ``script`` without a shell; a timeout or cancellation kills its process tree."""
     executable = shutil.which(script.command[0]) or script.command[0]
     env = {**os.environ, "JLV_FILE": selection.file, "JLV_LINE": str(selection.line)}
     process = await asyncio.create_subprocess_exec(
@@ -198,19 +203,82 @@ async def run(script: Script, selection: Selection) -> Completed:
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         env=env,
+        # Its own process group, so descendants can be killed together.
+        start_new_session=os.name == "posix",
     )
+    stdout, stderr = bytearray(), bytearray()
+    # Feed stdin while draining both pipes, so large inputs can't deadlock, and keep
+    # whatever was captured if the script times out.
+    tasks = [
+        asyncio.ensure_future(_feed(process.stdin, selection.payload(script.input))),
+        asyncio.ensure_future(_drain(process.stdout, stdout)),
+        asyncio.ensure_future(_drain(process.stderr, stderr)),
+    ]
     try:
-        # communicate() writes stdin while draining both pipes, so large inputs can't deadlock.
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(selection.payload(script.input)), script.timeout
-        )
+        async with asyncio.timeout(script.timeout):
+            await asyncio.gather(*tasks)
+            await process.wait()
     except TimeoutError:
-        await _kill(process)
-        return Completed(None, b"", b"", timed_out=True)
+        await _kill(process, tasks)
+        return Completed(None, bytes(stdout), bytes(stderr), timed_out=True)
     except BaseException:
-        await _kill(process)
+        await _kill(process, tasks)
         raise
-    return Completed(process.returncode, stdout, stderr)
+    return Completed(process.returncode, bytes(stdout), bytes(stderr))
+
+
+async def _feed(stream: asyncio.StreamWriter | None, data: bytes) -> None:
+    if stream is None:
+        return
+    # A script may exit, or close stdin, without reading all of its input.
+    with contextlib.suppress(BrokenPipeError, ConnectionResetError):
+        stream.write(data)
+        await stream.drain()
+        stream.close()
+
+
+async def _drain(stream: asyncio.StreamReader | None, sink: bytearray) -> None:
+    if stream is None:
+        return
+    while chunk := await stream.read(64 * 1024):
+        sink += chunk
+
+
+async def _kill(process: asyncio.subprocess.Process, tasks: list[asyncio.Future]) -> None:
+    """Kill the process and its descendants, waiting a bounded time for cleanup."""
+    for task in tasks:
+        task.cancel()
+    await _kill_tree(process)
+    try:
+        # Descendants that escaped the group can hold the pipes open indefinitely.
+        await asyncio.wait_for(asyncio.shield(process.wait()), KILL_GRACE)
+    except TimeoutError:
+        transport = getattr(process, "_transport", None)
+        if transport is not None:
+            transport.close()
+    await asyncio.gather(*tasks, return_exceptions=True)
+
+
+async def _kill_tree(process: asyncio.subprocess.Process) -> None:
+    if os.name == "posix":
+        with contextlib.suppress(ProcessLookupError, PermissionError):
+            os.killpg(process.pid, signal.SIGKILL)
+    elif process.returncode is None:
+        # taskkill /T follows the tree from a live parent, so run it before kill().
+        with contextlib.suppress(OSError):
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/F",
+                "/T",
+                "/PID",
+                str(process.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(killer.wait(), KILL_GRACE)
+    with contextlib.suppress(ProcessLookupError):
+        process.kill()
 
 
 async def execute(script: Script, selection: Selection) -> ScriptResult:
@@ -226,13 +294,6 @@ async def execute(script: Script, selection: Selection) -> ScriptResult:
     return parse_output(script, completed)
 
 
-async def _kill(process: asyncio.subprocess.Process) -> None:
-    with contextlib.suppress(ProcessLookupError):
-        process.kill()
-    with contextlib.suppress(Exception):
-        await asyncio.shield(process.wait())
-
-
 def _decode(data: bytes) -> str:
     return data.decode("utf-8", errors="replace")
 
@@ -241,53 +302,66 @@ def _is_json(mime: str) -> bool:
     return mime == JSON_MIME or mime.endswith("+json")
 
 
+def _failure(title: str, summary: str, stdout: str, stderr: str) -> ScriptResult:
+    """A readable failure that keeps whatever the script wrote."""
+    sections = [summary]
+    if stderr.strip():
+        sections.append("stderr:\n" + stderr.rstrip())
+    if stdout.strip():
+        sections.append("stdout:\n" + stdout.rstrip())
+    return ScriptResult(title, "text/plain", "\n\n".join(sections), error=True)
+
+
 def parse_output(script: Script, completed: Completed) -> ScriptResult:
     """Interpret a finished run as text, Markdown, JSON, or a readable failure."""
-    if completed.timed_out:
-        return ScriptResult(
-            f"{script.name}: timed out",
-            "text/plain",
-            f"The script did not finish within {script.timeout:g} seconds and was stopped.",
-            error=True,
-        )
     stdout, stderr = _decode(completed.stdout), _decode(completed.stderr)
+    if completed.timed_out:
+        return _failure(
+            f"{script.name}: timed out",
+            f"The script did not finish within {script.timeout:g} seconds and was stopped.",
+            stdout,
+            stderr,
+        )
     if completed.returncode != 0:
-        sections = [f"Exit status: {completed.returncode}"]
-        if stderr.strip():
-            sections.append("stderr:\n" + stderr.rstrip())
-        if stdout.strip():
-            sections.append("stdout:\n" + stdout.rstrip())
-        return ScriptResult(f"{script.name}: failed", "text/plain", "\n\n".join(sections), True)
+        return _failure(
+            f"{script.name}: failed", f"Exit status: {completed.returncode}", stdout, stderr
+        )
 
-    title, mime, content = script.name, script.output or "text/plain", stdout
+    title, mime = script.name, script.output or "text/plain"
     envelope = _envelope(stdout)
     if envelope is not None:
-        content = envelope["content"]
         if isinstance(envelope.get("title"), str):
             title = envelope["title"]
         if isinstance(envelope.get("mime"), str):
             mime = envelope["mime"].strip().lower()
-    if _is_json(mime):
-        if not isinstance(content, str):
+        content = envelope["content"]
+        # Envelope content is already parsed: any value, including a string, is the result.
+        if _is_json(mime):
             return ScriptResult(title, JSON_MIME, content, stderr=stderr)
+        if not isinstance(content, str):
+            content = json.dumps(content, indent=2, ensure_ascii=False)
+        return ScriptResult(title, _text_mime(mime), content, stderr=stderr)
+    if _is_json(mime):
         try:
-            return ScriptResult(title, JSON_MIME, json.loads(content), stderr=stderr)
+            return ScriptResult(title, JSON_MIME, json.loads(stdout), stderr=stderr)
         except json.JSONDecodeError as error:
             hint = (
-                "\n\nThe output contains more than one JSON value. Wrap them in an array, "
+                " The output contains more than one JSON value; wrap them in an array, "
                 "for example with jq -s."
                 if error.msg == "Extra data"
                 else ""
             )
-            return ScriptResult(
+            return _failure(
                 f"{script.name}: invalid JSON output",
-                "text/plain",
-                f"Expected exactly one JSON value: {error}{hint}",
-                error=True,
+                f"Expected exactly one JSON value: {error}.{hint}",
+                stdout,
+                stderr,
             )
-    if not isinstance(content, str):
-        content = json.dumps(content, indent=2, ensure_ascii=False)
-    return ScriptResult(title, mime if mime in TEXT_MIMES else "text/plain", content, stderr=stderr)
+    return ScriptResult(title, _text_mime(mime), stdout, stderr=stderr)
+
+
+def _text_mime(mime: str) -> str:
+    return mime if mime in TEXT_MIMES else "text/plain"
 
 
 def _envelope(stdout: str) -> dict | None:

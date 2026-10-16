@@ -6,12 +6,29 @@ import os
 import re
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
-from jlv import JlvApp, PrettyDocument, ScriptPicker, ScriptRunning, StringModal, StringView
+from jlv import (
+    NO_DATA,
+    JlvApp,
+    PrettyDocument,
+    ScriptPicker,
+    ScriptRunning,
+    StringModal,
+    StringView,
+)
 from jlv.rows import RowView
-from jlv.scripts import Completed, Script, Selection, json_pointer, load_scripts, parse_output
+from jlv.scripts import (
+    Completed,
+    Script,
+    Selection,
+    json_pointer,
+    load_scripts,
+    parse_output,
+    run,
+)
 from jlv.source import JsonlFile
 
 HTML = "<h1>Hi</h1><p>Hello</p>"
@@ -194,6 +211,94 @@ class OutputTests(unittest.TestCase):
         self.assertIn("partial", result.content)
         timed_out = parse_output(self.script, Completed(None, b"", b"", timed_out=True))
         self.assertTrue(timed_out.error)
+
+    def test_envelope_content_is_not_parsed_twice(self):
+        for content in ["hello", "42", None, 42]:
+            envelope = {"$jlv": "result", "mime": "application/json", "content": content}
+            result = parse_output(self.script, output(json.dumps(envelope)))
+            self.assertFalse(result.error)
+            self.assertEqual(result.content, content)
+
+    def test_parse_and_timeout_failures_keep_output(self):
+        script = Script("Tool", ("tool",), output="application/json")
+        invalid = parse_output(script, output("not json", stderr="helpful diagnostic"))
+        self.assertTrue(invalid.error)
+        self.assertIn("not json", invalid.content)
+        self.assertIn("helpful diagnostic", invalid.content)
+        timed_out = parse_output(script, Completed(None, b"halfway", b"slow", timed_out=True))
+        self.assertIn("halfway", timed_out.content)
+        self.assertIn("slow", timed_out.content)
+
+
+# Starts a descendant that inherits stdout/stderr and outlives the script, then records
+# the descendant's pid in the file named by the first argument.
+TREE = (
+    "import subprocess, sys, time\n"
+    "child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])\n"
+    "sys.stderr.write('warming up\\n'); sys.stderr.flush()\n"
+    "open(sys.argv[1], 'w').write(str(child.pid))\n"
+    "time.sleep(30)\n"
+)
+
+
+class RunTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.pid_file = Path(directory.name) / "pid"
+        self.script = Script("tree", (sys.executable, "-c", TREE, str(self.pid_file)))
+
+    def assert_gone(self, pid: int) -> None:
+        if os.name != "posix":
+            return
+        # The orphaned descendant is reaped by init, possibly after a moment as a zombie.
+        stat = Path(f"/proc/{pid}/stat")
+        deadline = time.monotonic() + 3
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            if stat.exists() and stat.read_text().split()[2] == "Z":
+                return
+            time.sleep(0.05)
+        self.fail(f"descendant {pid} is still running")
+
+    async def wait_for_pid(self) -> int:
+        deadline = time.monotonic() + 10
+        while not (self.pid_file.exists() and self.pid_file.read_text()):
+            if time.monotonic() > deadline:
+                self.fail("the script did not start its descendant")
+            await asyncio.sleep(0.05)
+        return int(self.pid_file.read_text())
+
+    async def test_timeout_kills_descendants_and_keeps_output(self):
+        script = Script(self.script.name, self.script.command, timeout=3.0)
+        start = time.monotonic()
+        completed = await run(script, selection())
+        self.assertLess(time.monotonic() - start, 6)
+        self.assertTrue(completed.timed_out)
+        self.assertIn(b"warming up", completed.stderr)
+        self.assert_gone(int(self.pid_file.read_text()))
+
+    async def test_cancelling_kills_descendants(self):
+        task = asyncio.ensure_future(run(self.script, selection()))
+        pid = await self.wait_for_pid()
+        start = time.monotonic()
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await task
+        self.assertLess(time.monotonic() - start, 3)
+        self.assert_gone(pid)
+
+    async def test_large_input_is_not_deadlocked(self):
+        script = Script(
+            "cat", (sys.executable, "-c", "import sys; sys.stdout.write(sys.stdin.read())")
+        )
+        value = "x" * 5_000_000
+        completed = await run(script, selection(value))
+        self.assertEqual(completed.returncode, 0)
+        self.assertEqual(len(completed.stdout), len(value))
 
 
 class DocumentPathTests(unittest.TestCase):
@@ -413,6 +518,37 @@ class ScriptAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(json.loads(result.value), expected)
             # The main view is unchanged underneath the inspectors.
             self.assertEqual(self.app._document.value, self.values[1])
+
+    async def test_inspector_keeps_json_scalar_types_when_chaining(self):
+        echo = python_script(
+            self.directory, "echo.py", "import sys\nsys.stdout.write(sys.stdin.read())\n"
+        )
+        emit = python_script(self.directory, "emit.py", "import sys\nprint(sys.argv[1])\n")
+        emit = emit[:-1] + ", {!r}]"
+        self.configure(
+            f'[[script]]\nname = "Echo"\ncommand = {echo}\ninput = "envelope"\n',
+            *(
+                f'[[script]]\nname = "{name}"\ncommand = {emit.format(text)}\n'
+                'output = "application/json"\n'
+                for name, text in [("Num", "42"), ("Null", "null"), ("Str", '"hello"')]
+            ),
+        )
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            await self.select(pilot, "body")
+            await pilot.press("enter")
+            await pilot.pause()
+            for name, expected in [("num", 42), ("null", None), ("str", "hello")]:
+                result = await self.run_in_inspector(pilot, name)
+                if isinstance(expected, str):
+                    # A JSON string is shown as the string itself, without quotes.
+                    self.assertEqual((result.value, result._data), (expected, NO_DATA))
+                else:
+                    self.assertEqual(result._data, expected)
+                sent = json.loads((await self.run_in_inspector(pilot, "echo")).value)
+                self.assertEqual(
+                    (sent["record"], sent["value"], sent["path"]), (expected, expected, "")
+                )
+                await pilot.press("escape", "escape")
 
     async def test_unconfigured_picker_notifies(self):
         async with self.app.run_test(size=(100, 30)) as pilot:

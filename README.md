@@ -285,9 +285,14 @@ other JSON is ordinary output:
 {"$jlv": "result", "title": "Schema validation", "mime": "text/markdown", "content": "Valid."}
 ```
 
-While a script runs, Escape stops it. A nonzero exit, timeout, or invalid JSON
-output opens the inspector with the exit status, stderr, and stdout. Stderr from
-a successful run appears as a notification. Scripts never change the file.
+With `"mime": "application/json"`, `content` is the result value itself, and is
+not parsed again: `"content": "42"` is the string `"42"`, not a number.
+
+While a script runs, Escape stops it. Escape and timeouts stop the script along
+with any processes it started. A nonzero exit, timeout, or invalid JSON output
+opens the inspector with the exit status and whatever the script wrote to stderr
+and stdout. Stderr from a successful run appears as a notification. Scripts never
+change the file.
 
 Scripts are trusted local programs that run with your permissions and network
 access. JLV runs only scripts listed in your own configuration, never anything

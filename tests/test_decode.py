@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from jlv import JlvApp, PrettyDocument, StringModal, StringView
+from jlv import NO_DATA, JlvApp, PrettyDocument, StringModal, StringView
 from jlv.rows import RowView
 from jlv.search import SearchBar
 from jlv.source import JsonlFile
@@ -402,7 +402,7 @@ class InspectorDecodeTests(unittest.IsolatedAsyncioTestCase):
         async with self.app.run_test(size=(100, 30)) as pilot:
             await self.open_inspector(pilot, 2)
             modal = self.app.screen
-            modal._show(chain, None)
+            modal._show(chain, NO_DATA)
             view = modal.query_one(StringView)
             for _ in range(4):
                 await pilot.press(">")

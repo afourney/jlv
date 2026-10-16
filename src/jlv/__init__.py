@@ -290,6 +290,10 @@ class StringView(TextArea):
         return line
 
 
+# The inspector shows a plain string, rather than formatted JSON of a parsed value.
+NO_DATA = object()
+
+
 class StringModal(ModalScreen[None]):
     """A read-only, wrapped document with viewport-based rendering."""
 
@@ -326,18 +330,18 @@ class StringModal(ModalScreen[None]):
         title: str | None = None,
         *,
         origin: tuple[object, tuple[str | int, ...]] | None = None,
-        data: dict | list | None = None,
+        data: object = NO_DATA,
     ) -> None:
         super().__init__()
         self.value = value
         self._border_title = title
         # The record and path this string came from, if it is shown unchanged from a record.
         self.origin = origin
-        # The decoded object or array shown as formatted JSON, if any, and earlier states.
+        # The parsed JSON value shown as formatted JSON, or NO_DATA, and earlier states.
         self._data = data
-        self._decoded: list[tuple[str, dict | list | None]] = []
+        self._decoded: list[tuple[str, object]] = []
         # What the next decode would show, if anything; computed for the border hint.
-        self._next: tuple[str, dict | list | None] | None = None
+        self._next: tuple[str, object] | None = None
 
     def compose(self) -> ComposeResult:
         with Vertical(id="inspector"):
@@ -354,19 +358,19 @@ class StringModal(ModalScreen[None]):
         self.app.post_message(self.Closed())
 
     def _update_hint(self) -> None:
-        if self._data is None:
+        if self._data is NO_DATA:
             decoded = decode_json(self.value)
             if decoded is None:
                 self._next = None
             elif isinstance(decoded, str):
-                self._next = decoded, None
+                self._next = decoded, NO_DATA
             else:
                 self._next = json.dumps(decoded, indent=2, ensure_ascii=False), decoded
         else:
             data, changed = decode_nested(self._data)
-            self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None  # type: ignore[assignment]
+            self._next = (json.dumps(data, indent=2, ensure_ascii=False), data) if changed else None
         hints = []
-        if self._data is None and self.app._native_preview.available(self.value):
+        if self._data is NO_DATA and self.app._native_preview.available(self.value):
             hints.append("Press > to open natively")
         elif self._next is not None:
             hints.append("Press > to decode")
@@ -410,7 +414,7 @@ class StringModal(ModalScreen[None]):
         self._show(*self._decoded.pop())
         return True
 
-    def _show(self, value: str, data: dict | list | None) -> None:
+    def _show(self, value: str, data: object) -> None:
         self.value = value
         self._data = data
         self.query_one(SearchBar).cancel()
@@ -873,7 +877,7 @@ class JlvApp(App):
         elif key in {">", "<"}:
             value = ""
             if isinstance(panel, StringView) and isinstance(self.screen, StringModal):
-                if self.screen._data is None:
+                if self.screen._data is NO_DATA:
                     value = self.screen.value
             elif panel.id == "detail-list" and self._document is not None:
                 value = self._document.strings.get(panel.index, "")
@@ -1073,7 +1077,7 @@ class JlvApp(App):
                 record, path = modal.origin
                 return Selection(record, path, modal.value, self.source.path, line)
             # Decoded text and script results stand alone: they are the whole record.
-            value = modal.value if modal._data is None else modal._data
+            value = modal.value if modal._data is NO_DATA else modal._data
             return Selection(value, (), value, self.source.path, line)
         if panel.id == "lines-list":
             selected = (), self._document.value
@@ -1137,9 +1141,12 @@ class JlvApp(App):
             return
         if inspector:
             content = result.content
-            text = json.dumps(content, indent=2, ensure_ascii=False)
-            data = content if isinstance(content, (dict, list)) else None
-            self.push_screen(StringModal(text, title=result.title, data=data))
+            if isinstance(content, str):
+                # A JSON string is shown, and sent onward, as the string itself.
+                self.push_screen(StringModal(content, title=result.title))
+            else:
+                text = json.dumps(content, indent=2, ensure_ascii=False)
+                self.push_screen(StringModal(text, title=result.title, data=content))
             return
         right = self.query_one("#detail-list", RowView)
         if self._document is not None:
