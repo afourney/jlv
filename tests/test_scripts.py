@@ -22,6 +22,8 @@ from jlv import (
 )
 from jlv.rows import RowView
 from jlv.scripts import (
+    _WINDOWS_LAUNCHER,
+    KILL_GRACE,
     Completed,
     Script,
     Selection,
@@ -315,26 +317,89 @@ class RunTests(unittest.IsolatedAsyncioTestCase):
         self.assert_gone(int(self.pid_file.read_text()))
 
     async def test_cancelling_during_launch_kills_what_started(self):
+        await self.cancel_during_launch(0.5)
+
+    async def test_cancelling_launch_slower_than_cleanup_grace(self):
+        await self.cancel_during_launch(KILL_GRACE + 0.3)
+
+    async def test_cancelling_launch_again_still_cleans_up(self):
+        await self.cancel_during_launch(0.5, cancel_twice=True)
+
+    async def cancel_during_launch(self, delay: float, *, cancel_twice: bool = False):
         launched = asyncio.Event()
         real = asyncio.create_subprocess_exec
+        processes = []
 
         async def slow_launch(*args, **kwargs):
             # The process exists, but the launch hasn't returned it yet.
             process = await real(*args, **kwargs)
+            processes.append(process)
             launched.set()
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(delay)
             return process
 
         with unittest.mock.patch("asyncio.create_subprocess_exec", slow_launch):
             task = asyncio.ensure_future(run(self.script, selection()))
             await launched.wait()
-            pid = await self.wait_for_pid()
+            if os.name == "nt":
+                # The launcher cannot start the script until its job has been assigned.
+                self.assertFalse(self.pid_file.exists())
+                pid = processes[0].pid
+            else:
+                pid = await self.wait_for_pid()
             start = time.monotonic()
             task.cancel()
+            if cancel_twice:
+                await asyncio.sleep(0.05)
+                task.cancel()
             with self.assertRaises(asyncio.CancelledError):
                 await task
-        self.assertLess(time.monotonic() - start, 3)
+        self.assertLess(time.monotonic() - start, max(3, delay + KILL_GRACE))
+        self.assert_gone(processes[0].pid)
         self.assert_gone(pid)
+        if os.name == "nt":
+            self.assertFalse(self.pid_file.exists())
+
+    async def test_gated_launcher_preserves_stdin_arguments_and_status(self):
+        # Exercise the gate protocol on every platform, including raw bytes that would
+        # be lost if the launcher buffered stdin or translated Windows newlines.
+        body = (
+            "import json, sys\n"
+            "sys.stdout.buffer.write(sys.stdin.buffer.read())\n"
+            "print(json.dumps(sys.argv[1:]), file=sys.stderr)\n"
+            "sys.exit(7)\n"
+        )
+        process = await asyncio.create_subprocess_exec(
+            sys.executable,
+            "-I",
+            "-S",
+            "-c",
+            _WINDOWS_LAUNCHER,
+            sys.executable,
+            "-c",
+            body,
+            "a b",
+            'a"b',
+            "café",
+            stdin=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        payload = b"\0\r\n\x1a" + bytes(range(256)) * 1024
+        stdout, stderr = await asyncio.wait_for(process.communicate(b"\0" + payload), 10)
+        self.assertEqual(stdout, payload)
+        self.assertEqual(process.returncode, 7)
+        self.assertEqual(json.loads(stderr), ["a b", 'a"b', "café"])
+
+    @unittest.skipUnless(os.name == "nt", "Windows job assignment")
+    async def test_failed_job_assignment_never_starts_script(self):
+        marker = self.pid_file.with_name("launched")
+        command = (sys.executable, "-c", f"open({str(marker)!r}, 'w').close()")
+        with unittest.mock.patch("jlv.scripts._WindowsJob.create", return_value=None):
+            result = await execute(Script("touch", command), selection())
+        self.assertTrue(result.error)
+        self.assertIn("Windows job", result.content)
+        self.assertFalse(marker.exists())
 
     async def test_unencodable_value_fails_before_launch(self):
         marker = self.pid_file.with_name("launched")

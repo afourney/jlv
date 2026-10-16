@@ -14,6 +14,7 @@ import os
 import re
 import shutil
 import signal
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -214,6 +215,23 @@ class Completed:
 # How long to wait for a killed process tree to be reaped before abandoning its pipes.
 KILL_GRACE = 2.0
 
+# Windows must assign the launcher to its job before any user code can spawn children.
+# Read exactly one byte without Python buffering so the command inherits the remaining
+# stdin unchanged. The launcher and command share stdout/stderr and the working directory.
+_WINDOWS_LAUNCHER = """
+import os
+import subprocess
+import sys
+
+if os.read(0, 1) == b"\\0":
+    try:
+        status = subprocess.call(sys.argv[1:])
+    except OSError as error:
+        print(error, file=sys.stderr)
+        status = 127
+    sys.exit(status)
+"""
+
 
 async def run(script: Script, selection: Selection) -> Completed:
     """Run ``script`` without a shell; a timeout or cancellation kills its process tree."""
@@ -224,12 +242,17 @@ async def run(script: Script, selection: Selection) -> Completed:
     stdout, stderr = bytearray(), bytearray()
     # Feed stdin while draining both pipes, so large inputs can't deadlock, and keep
     # whatever was captured if the script times out.
-    tasks = [
-        asyncio.ensure_future(_feed(process.stdin, payload)),
-        asyncio.ensure_future(_drain(process.stdout, stdout)),
-        asyncio.ensure_future(_drain(process.stderr, stderr)),
-    ]
+    tasks = []
     try:
+        if os.name == "nt":
+            if tree._job is None:
+                raise OSError("Could not assign the script launcher to a Windows job")
+            payload = b"\0" + payload
+        tasks = [
+            asyncio.ensure_future(_feed(process.stdin, payload)),
+            asyncio.ensure_future(_drain(process.stdout, stdout)),
+            asyncio.ensure_future(_drain(process.stderr, stderr)),
+        ]
         async with asyncio.timeout(script.timeout):
             await asyncio.gather(*tasks)
             await process.wait()
@@ -246,11 +269,16 @@ async def run(script: Script, selection: Selection) -> Completed:
 
 async def _spawn(script: Script, selection: Selection) -> asyncio.subprocess.Process:
     executable = shutil.which(script.command[0]) or script.command[0]
+    command = (executable, *script.command[1:])
+    if os.name == "nt":
+        # A Windows venv's python.exe is itself a launcher that spawns an interpreter.
+        # Use the base interpreter for the gate so that no process escapes before assignment.
+        python = getattr(sys, "_base_executable", sys.executable)
+        command = (python, "-I", "-S", "-c", _WINDOWS_LAUNCHER, *command)
     env = {**os.environ, "JLV_FILE": selection.file, "JLV_LINE": str(selection.line)}
     spawn = asyncio.ensure_future(
         asyncio.create_subprocess_exec(
-            executable,
-            *script.command[1:],
+            *command,
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
@@ -264,12 +292,27 @@ async def _spawn(script: Script, selection: Selection) -> asyncio.subprocess.Pro
         # descendants can hold open indefinitely. Let it finish, then kill what it started.
         return await asyncio.shield(spawn)
     except asyncio.CancelledError:
-        done, _ = await asyncio.wait({spawn}, timeout=KILL_GRACE)
-        if spawn in done and not spawn.cancelled() and spawn.exception() is None:
-            tree = _ProcessTree(spawn.result())
-            await tree.kill([])
-            tree.close()
+        # Launch may take longer than KILL_GRACE. Do not abandon it: the UI has already
+        # dismissed the running dialog, but this worker still owns the eventual process.
+        # Shield cleanup from another cancellation (for example when the app exits).
+        cleanup = asyncio.create_task(_stop_after_spawn(spawn))
+        while not cleanup.done():
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.shield(cleanup)
+        cleanup.result()
         raise
+
+
+async def _stop_after_spawn(spawn: asyncio.Future) -> None:
+    try:
+        process = await spawn
+    except Exception:  # noqa: BLE001 - consume launch failures after the caller cancelled
+        return
+    tree = _ProcessTree(process)
+    try:
+        await tree.kill([])
+    finally:
+        tree.close()
 
 
 async def _feed(stream: asyncio.StreamWriter | None, data: bytes) -> None:
@@ -292,10 +335,9 @@ async def _drain(stream: asyncio.StreamReader | None, sink: bytearray) -> None:
 class _ProcessTree:
     """A script and its descendants, which can be killed even after the script exits.
 
-    On POSIX the script leads its own process group. On Windows it is assigned to a job
-    object; descendants join the job when they start, and it tracks them by membership
-    rather than by parent, so they are found even once the script has exited. (A process
-    started in the moment before the script joins its job is not tracked.)
+    On POSIX the script leads its own process group. On Windows the gated launcher joins
+    a job before starting the script. Descendants inherit membership, so they are found
+    even once the script has exited.
     """
 
     def __init__(self, process: asyncio.subprocess.Process) -> None:
@@ -324,20 +366,7 @@ class _ProcessTree:
                 os.killpg(self.process.pid, signal.SIGKILL)
         elif self._job is not None:
             self._job.terminate()
-        elif self.process.returncode is None:
-            # Without a job, taskkill /T can only follow the tree from a live parent.
-            with contextlib.suppress(OSError):
-                killer = await asyncio.create_subprocess_exec(
-                    "taskkill",
-                    "/F",
-                    "/T",
-                    "/PID",
-                    str(self.process.pid),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
-                )
-                with contextlib.suppress(TimeoutError):
-                    await asyncio.wait_for(killer.wait(), KILL_GRACE)
+        # Without a Windows job the launcher has not been released, so it has no children.
         with contextlib.suppress(ProcessLookupError):
             self.process.kill()
 
@@ -359,7 +388,7 @@ class _WindowsJob:
 
     @classmethod
     def create(cls, pid: int) -> _WindowsJob | None:
-        """Put ``pid`` in a new job; None if Windows refuses, falling back to taskkill."""
+        """Put the gated launcher in a new job; None if Windows refuses."""
         try:
             return cls._create(pid)
         except (OSError, AttributeError):
