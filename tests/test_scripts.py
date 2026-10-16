@@ -143,6 +143,11 @@ class SelectionTests(unittest.TestCase):
         self.assertFalse(containers.applies(selection(5, ("n",))))
         self.assertTrue(html.applies(selection()))
         self.assertFalse(html.applies(selection("plain")))
+        # Inspector contents stand alone as the whole record but keep their own type.
+        standalone = Selection("<p>", (), "<p>", "f", 1)
+        self.assertTrue(strings.applies(standalone))
+        self.assertTrue(records.applies(standalone))
+        self.assertFalse(containers.applies(standalone))
 
 
 class OutputTests(unittest.TestCase):
@@ -219,7 +224,10 @@ class ScriptAppTests(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.directory = Path(directory.name)
         path = self.directory / "data.jsonl"
-        self.values = [{"id": 0, "body": HTML, "n": 3}, {"id": 1, "body": "plain"}]
+        self.values = [
+            {"id": 0, "body": HTML, "n": 3},
+            {"id": 1, "body": "plain", "payload": json.dumps({"h": HTML})},
+        ]
         path.write_text("".join(json.dumps(row) + "\n" for row in self.values))
         self.source = JsonlFile(path)
         self.addCleanup(self.source.close)
@@ -342,6 +350,69 @@ class ScriptAppTests(unittest.IsolatedAsyncioTestCase):
             # Cancelling waits for the killed process, so it no longer exists.
             with self.assertRaises(ProcessLookupError):
                 os.kill(int(pid_file.read_text()), 0)
+
+    def configure_describe(self) -> None:
+        describe = python_script(
+            self.directory,
+            "describe.py",
+            "import json, sys\n"
+            "env = json.load(sys.stdin)\n"
+            "print(json.dumps({'path': env['path'], 'value': env['value'],"
+            " 'record': env['record'], 'line': env['source']['line']}))\n",
+        )
+        self.configure(
+            f'[[script]]\nname = "Text"\ncommand = {describe}\ninput = "envelope"\n',
+            f'[[script]]\nname = "Json"\ncommand = {describe}\ninput = "envelope"\n'
+            'output = "application/json"\n',
+        )
+
+    async def run_in_inspector(self, pilot, name: str) -> StringModal:
+        before = self.app.screen
+        await pilot.press("|", *name.lower(), "enter")
+        await self.wait_for(
+            pilot,
+            lambda: isinstance(self.app.screen, StringModal) and self.app.screen is not before,
+        )
+        return self.app.screen
+
+    async def test_inspector_runs_on_its_string_and_chains_results(self):
+        self.configure_describe()
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            await self.select(pilot, "body")
+            await pilot.press("enter")
+            inspector = self.app.screen
+            self.assertIsInstance(inspector, StringModal)
+            # An unchanged string keeps its place in the record.
+            result = await self.run_in_inspector(pilot, "Text")
+            sent = json.loads(result.value)
+            self.assertEqual(sent["path"], "/body")
+            self.assertEqual(sent["value"], HTML)
+            self.assertEqual(sent["record"], self.values[0])
+            self.assertEqual(sent["line"], 1)
+            # A script result stands alone as the next script's record.
+            chained = await self.run_in_inspector(pilot, "Text")
+            sent = json.loads(chained.value)
+            self.assertEqual(sent["path"], "")
+            self.assertEqual(sent["value"], result.value)
+            self.assertEqual(sent["record"], result.value)
+            await pilot.press("escape", "escape")
+            self.assertIs(self.app.screen, inspector)
+
+    async def test_inspector_sends_decoded_value_and_shows_json_results(self):
+        self.configure_describe()
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            await pilot.press("j")
+            await self.select(pilot, "payload")
+            await pilot.press("enter")
+            await pilot.pause()
+            await pilot.press(">")
+            self.assertEqual(self.app.screen._data, {"h": HTML})
+            result = await self.run_in_inspector(pilot, "Json")
+            expected = {"path": "", "value": {"h": HTML}, "record": {"h": HTML}, "line": 2}
+            self.assertEqual(result._data, expected)
+            self.assertEqual(json.loads(result.value), expected)
+            # The main view is unchanged underneath the inspectors.
+            self.assertEqual(self.app._document.value, self.values[1])
 
     async def test_unconfigured_picker_notifies(self):
         async with self.app.run_test(size=(100, 30)) as pilot:

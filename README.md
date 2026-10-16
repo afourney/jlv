@@ -209,10 +209,11 @@ a crash may leave temporary files behind.
 
 ## Custom scripts
 
-Press `|` in the JSON preview to run a script on the selected value, or in the
-record list to run it on the whole record. Any row can be selected: strings,
-numbers, booleans, null, and objects or arrays (from either of their delimiter
-rows). A picker lists the scripts that apply; type to filter, then press Enter.
+Press `|` in the JSON preview to run a script on the selected value, in the
+record list to run it on the whole record, or in the string inspector to run it
+on the string being shown. Any row can be selected: strings, numbers, booleans,
+null, and objects or arrays (from either of their delimiter rows). A picker lists
+the scripts that apply; type to filter, then press Enter.
 
 Scripts are declared in `scripts.toml` in JLV's user configuration directory:
 `~/.config/jlv/` on Linux, `~/Library/Application Support/jlv/` on macOS, and
@@ -262,14 +263,19 @@ values are sent as JSON text. In `envelope` mode, stdin is a JSON object:
 `record` is the record as currently displayed, including any `>` decoding or an
 earlier script's JSON result. `path` is a JSON Pointer into it that resolves to
 `value`; the whole record has the path `""`. `source` records where the record
-came from.
+came from. In the string inspector, an unchanged string keeps its record and
+path. Once the inspector shows decoded text or a script's result, that content
+stands alone: it is sent as both `record` and `value`, with the path `""`, and
+`applies_to = "record"` matches it alongside its own type.
 
-Text and Markdown output opens in the string inspector, where search and copy
-work as usual; Markdown is shown as text. JSON output must be exactly one JSON
-value (wrap multiple values in an array, for example with `jq -s`). It replaces
-the displayed record, so you can browse, decode, search within, or run another
-script on it; `<` returns to the previous view, and changing records restores
-the original.
+Text and Markdown output opens in a new string inspector, where search and copy
+work as usual and `|` runs another script on the result; Markdown is shown as
+text. Escape returns to where the script was run. JSON output must be exactly
+one JSON value (wrap multiple values in an array, for example with `jq -s`). Run
+from a main panel, it replaces the displayed record, so you can browse, decode,
+search within, or run another script on it; `<` returns to the previous view,
+and changing records restores the original. Run from the string inspector, it
+opens as formatted JSON in a new inspector.
 
 A script can also choose its own title and type by printing a result envelope.
 Only an object with `"$jlv": "result"` and `content` is treated this way; any

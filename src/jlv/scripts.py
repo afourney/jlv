@@ -144,13 +144,12 @@ class Selection:
 
     @property
     def kinds(self) -> tuple[str, ...]:
-        if not self.path:
-            return ("record", "container") if isinstance(self.value, (dict, list)) else ("record",)
+        kinds = ("record",) if not self.path else ()
         if isinstance(self.value, str):
-            return ("string",)
+            return (*kinds, "string")
         if isinstance(self.value, (dict, list)):
-            return ("container",)
-        return ()
+            return (*kinds, "container")
+        return kinds
 
     @property
     def text(self) -> str:

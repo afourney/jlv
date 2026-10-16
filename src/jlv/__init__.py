@@ -320,12 +320,21 @@ class StringModal(ModalScreen[None]):
     }
     """
 
-    def __init__(self, value: str, title: str | None = None) -> None:
+    def __init__(
+        self,
+        value: str,
+        title: str | None = None,
+        *,
+        origin: tuple[object, tuple[str | int, ...]] | None = None,
+        data: dict | list | None = None,
+    ) -> None:
         super().__init__()
         self.value = value
         self._border_title = title
+        # The record and path this string came from, if it is shown unchanged from a record.
+        self.origin = origin
         # The decoded object or array shown as formatted JSON, if any, and earlier states.
-        self._data: dict | list | None = None
+        self._data = data
         self._decoded: list[tuple[str, dict | list | None]] = []
         # What the next decode would show, if anything; computed for the border hint.
         self._next: tuple[str, dict | list | None] | None = None
@@ -1045,15 +1054,27 @@ class JlvApp(App):
         if self._document is not None:
             value = self._document.strings.get(index)
             if value is not None:
-                self.push_screen(StringModal(value))
+                origin = self._document.value, self._document.paths[index]
+                self.push_screen(StringModal(value, origin=origin))
                 self.query_one(SearchBar).cancel()
                 return True
         return False
 
     def _selection(self, panel: RowView | StringView) -> Selection | None:
-        """Snapshot the displayed record and the value selected in a main panel."""
-        if not isinstance(panel, RowView) or self._document is None or self._detail_idx is None:
+        """Snapshot the displayed record and the selected value, or the inspector's contents."""
+        if self._document is None or self._detail_idx is None:
             return None
+        line = self._detail_idx + 1
+        if isinstance(panel, StringView):
+            modal = self.screen
+            if not isinstance(modal, StringModal):
+                return None
+            if modal.origin is not None and not modal._decoded:
+                record, path = modal.origin
+                return Selection(record, path, modal.value, self.source.path, line)
+            # Decoded text and script results stand alone: they are the whole record.
+            value = modal.value if modal._data is None else modal._data
+            return Selection(value, (), value, self.source.path, line)
         if panel.id == "lines-list":
             selected = (), self._document.value
         else:
@@ -1061,7 +1082,7 @@ class JlvApp(App):
             if selected is None:
                 return None
         path, value = selected
-        return Selection(self._document.value, path, value, self.source.path, self._detail_idx + 1)
+        return Selection(self._document.value, path, value, self.source.path, line)
 
     def _pick_script(self, panel: RowView | StringView) -> None:
         selection = self._selection(panel)
@@ -1089,6 +1110,7 @@ class JlvApp(App):
         self.push_screen(ScriptPicker(available), chosen)
 
     def _run_script(self, script: Script, selection: Selection) -> None:
+        inspector = isinstance(self.screen, StringModal)
         running = ScriptRunning(script.name)
         self.push_screen(running)
 
@@ -1096,11 +1118,12 @@ class JlvApp(App):
             result = await execute(script, selection)
             if running.is_attached:
                 running.dismiss()
-                self._show_script_result(result)
+                self._show_script_result(result, inspector)
 
         running.worker = self.run_worker(work(), group="scripts", exit_on_error=False)
 
-    def _show_script_result(self, result: ScriptResult) -> None:
+    def _show_script_result(self, result: ScriptResult, inspector: bool) -> None:
+        """Show text in a new inspector; JSON replaces the record, or opens over an inspector."""
         if result.stderr.strip() and not result.error:
             stderr = result.stderr.strip()
             self.notify(
@@ -1111,6 +1134,12 @@ class JlvApp(App):
             )
         if result.mime != "application/json" or result.error:
             self.push_screen(StringModal(str(result.content), title=result.title))
+            return
+        if inspector:
+            content = result.content
+            text = json.dumps(content, indent=2, ensure_ascii=False)
+            data = content if isinstance(content, (dict, list)) else None
+            self.push_screen(StringModal(text, title=result.title, data=data))
             return
         right = self.query_one("#detail-list", RowView)
         if self._document is not None:
