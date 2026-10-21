@@ -73,6 +73,22 @@ class SourceTests(unittest.TestCase):
                 self.assertEqual(source.preview(0), "    1  " + compact)
                 self.assertEqual(source.preview_width, cell_len(source.preview(0)))
 
+    def test_formatted_preview_preserves_json_tokens(self):
+        tokens = (
+            r'"two  spaces": "left  right", "escaped": "quote: \"  slash: \\", '
+            '"unicode": "a\u00a0\u2003b", '
+            r'"escape": "\u0020", "number": -0.00e+02, "dup": 1, "dup": 2'
+        )
+        source = self.source(("{\n\t" + tokens + "\n}\n").encode())
+        self.assertEqual(source.preview(0), "    1  { " + tokens + " }")
+        self.assertEqual(json.loads(source.preview(0)[7:]), source.value(0))
+        self.assertEqual(source.preview_width, cell_len(source.preview(0)))
+
+    def test_formatted_preview_limit_counts_output_not_indentation(self):
+        source = self.source(b"{\n" + b" " * 70_000 + b'"text": "' + b"x" * 1200 + b'"\n}')
+        self.assertEqual(source.preview(0), "    1  " + ('{ "text": "' + "x" * 1200)[:1000] + "...")
+        self.assertEqual(source.value(0), {"text": "x" * 1200})
+
     def test_formatted_json_errors(self):
         for content, error in [
             # Recognized as formatted JSON, so the error locates it within the whole file.

@@ -1013,11 +1013,22 @@ class JlvApp(App):
             self._records_collapsed = True
             self._size_records()
 
+    def _record_preview(self, index: int) -> str:
+        if self._records_collapsed:
+            return f"{index + 1:>5}"
+        return self.source.preview(index)
+
+    def _record_width(self) -> int:
+        if self._records_collapsed:
+            return max(5, len(str(len(self.source))))
+        return self.source.preview_width
+
     def _size_records(self) -> None:
         left = self.screen_stack[0].query_one("#lines-list", RowView)
+        left.extend_rows(len(self.source), self._record_width())
         if self._records_collapsed:
             # Keep just the right-aligned record numbers, plus the scrollbar.
-            left.styles.width = max(5, len(str(len(self.source)))) + 1
+            left.styles.width = self._record_width() + 1
             left.scroll_to(x=0, animate=False)
         else:
             left.styles.width = None
@@ -1095,7 +1106,7 @@ class JlvApp(App):
 
     def on_mount(self) -> None:
         left = self.query_one("#lines-list", RowView)
-        left.set_rows(len(self.source), self.source.preview_width, self.source.preview)
+        left.set_rows(len(self.source), self._record_width(), self._record_preview)
         left.end_available = self.source.complete
         left.focus()
         self._update_detail(0)
@@ -1109,7 +1120,7 @@ class JlvApp(App):
         screen = self.screen_stack[0]
         left = screen.query_one("#lines-list", RowView)
         complete, error = self.source.complete, self.source.error
-        count, width = len(self.source), self.source.preview_width
+        count, width = len(self.source), self._record_width()
         if left.row_count != count or left.virtual_size.width != width:
             left.extend_rows(count, width)
             if self._records_collapsed:
@@ -1133,7 +1144,7 @@ class JlvApp(App):
             self.notify(reason, title="End of file unavailable", severity="warning")
         else:
             left = self.screen_stack[0].query_one("#lines-list", RowView)
-            left.extend_rows(len(self.source), self.source.preview_width)
+            left.extend_rows(len(self.source), self._record_width())
             left.end_available = True
             left.action_cursor_end()
         event.stop()

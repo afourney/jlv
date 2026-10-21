@@ -203,8 +203,28 @@ class JsonlFile:
 
     @staticmethod
     def _collapse(text: str) -> str:
-        # Enough formatted text for a 1,000-character single-line preview.
-        return " ".join(text[:65536].split())
+        # Keep original tokens (including duplicate keys and number spelling),
+        # collapsing only JSON whitespace outside strings. Stop after enough
+        # output for the preview and its truncation marker.
+        result: list[str] = []
+        quoted = escaped = pending_space = False
+        for char in text:
+            if not quoted and char in " \t\r\n":
+                pending_space = bool(result)
+                continue
+            if pending_space:
+                result.append(" ")
+                pending_space = False
+            result.append(char)
+            if escaped:
+                escaped = False
+            elif quoted and char == "\\":
+                escaped = True
+            elif char == '"':
+                quoted = not quoted
+            if len(result) > 1000:
+                break
+        return "".join(result)
 
     @staticmethod
     def _preview_text(text: str, line_number: int) -> str:
