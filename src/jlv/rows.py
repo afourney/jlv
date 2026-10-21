@@ -16,15 +16,18 @@ from textual.selection import Selection
 from textual.strip import Strip
 from textual.widget import Widget
 
+# Emacs-style aliases for the vim line-edge keys.
+KEY_ALIASES = {"ctrl+a": "0", "ctrl+e": "$"}
+
 
 class PanelKey(Message):
     """Forward navigation keys without intercepting text-entry widgets."""
 
     def __init__(self, panel: Widget, event: events.Key) -> None:
         self.panel = panel
-        self.character = event.character
+        self.character = KEY_ALIASES.get(event.key, event.character)
         super().__init__()
-        if event.character in {
+        if self.character in {
             "h",
             "j",
             "k",

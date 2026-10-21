@@ -11,11 +11,12 @@ from pathlib import Path
 from typing import ClassVar
 
 from rich.cells import cell_len
+from rich.table import Table
 from rich.text import Text
 from textual import events
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Container, Horizontal, Vertical
+from textual.containers import Container, Horizontal, Vertical, VerticalScroll
 from textual.document._document import Selection as TextSelection
 from textual.geometry import Offset, Region
 from textual.message import Message
@@ -603,6 +604,67 @@ class ScriptRunning(ModalScreen[None]):
         self.dismiss()
 
 
+SHORTCUTS = [
+    ("Up / Down, k / j", "Select the previous / next record or line"),
+    ("Page Up / Page Down", "Move by a page"),
+    ("Home / End, gg / G", "Move to the first / last row"),
+    ("Tab / Shift+Tab", "Switch panels"),
+    ("Left / Right, h / l", "Scroll horizontally where available"),
+    ("0 / $, Ctrl+A / Ctrl+E", "Reveal the start / end of the current line"),
+    ("[ / ]", "Navigate object/array block starts in the JSON preview"),
+    ("%", "Jump between matching object/array delimiters in the JSON preview"),
+    ("Enter", "Drill down: from the record list into the JSON preview, then into a string"),
+    ("> / <", "Decode a JSON-encoded string or open encoded data natively / undo"),
+    ("|", "Run a custom script on the selected value or record"),
+    ("Ctrl+F, /, ?", "Open search"),
+    ("F3, n / Shift+F3, N", "Find next / previous match"),
+    ("Alt+R / Alt+C", "Toggle Regex / Match case while search is open"),
+    (":number then Enter", "Jump to a 1-based line in the originating panel"),
+    (":q then Enter", "Close the string inspector, or quit from a main panel"),
+    ("Ctrl+C", "Copy selected text"),
+    ("F1", "Show this help"),
+    ("Escape", "Back out one level: close search, the inspector, then the JSON preview"),
+]
+
+
+class HelpModal(ModalScreen[None]):
+    """List the keyboard shortcuts."""
+
+    BINDINGS: ClassVar[list[Binding]] = [
+        Binding("escape,q", "dismiss", "Close"),
+    ]
+    DEFAULT_CSS = """
+    HelpModal {
+        align: center middle;
+    }
+    HelpModal #help {
+        width: 110;
+        max-width: 90%;
+        height: auto;
+        max-height: 90%;
+        border: thick $accent;
+        border-subtitle-color: $text-muted;
+        background: $surface;
+        padding: 0 1;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        table = Table.grid(padding=(0, 2))
+        table.add_column(style="bold", no_wrap=True)
+        table.add_column()
+        for keys, effect in SHORTCUTS:
+            table.add_row(keys, effect)
+        with VerticalScroll(id="help"):
+            yield Static(table)
+
+    def on_mount(self) -> None:
+        container = self.query_one("#help")
+        container.border_title = "Keyboard shortcuts"
+        container.border_subtitle = "Escape to close"
+        container.focus()
+
+
 class NativePreviewConfirmationRequested(Message):
     def __init__(self, info: PreviewInfo, allow: Callable[[], None]) -> None:
         super().__init__()
@@ -625,6 +687,7 @@ class JlvApp(App):
         Binding("alt+c", "toggle_case", "Match case", priority=True, show=False),
         Binding("escape", "close_search", "Close search", priority=True),
         Binding("enter", "inspect_search_line", show=False, priority=True),
+        Binding("f1", "help", "Help", priority=True),
     ]
     DEFAULT_CSS = """
     Horizontal {
@@ -925,6 +988,12 @@ class JlvApp(App):
         }:
             return bool(self.screen.query(SearchBar))
         return super().check_action(action, parameters)
+
+    def action_help(self) -> None:
+        if isinstance(self.screen, HelpModal):
+            self.screen.dismiss()
+        else:
+            self.push_screen(HelpModal())
 
     def action_find_next(self) -> None:
         self._remember_input_target()

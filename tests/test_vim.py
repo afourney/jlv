@@ -10,7 +10,7 @@ from pathlib import Path
 from rich.cells import cell_len
 from textual.widgets import Input, Static
 
-from jlv import JlvApp, PrettyDocument, StringModal, StringView
+from jlv import SHORTCUTS, HelpModal, JlvApp, PrettyDocument, StringModal, StringView
 from jlv.rows import RowView
 from jlv.search import SearchBar
 from jlv.source import JsonlFile
@@ -237,6 +237,74 @@ class VimTests(unittest.IsolatedAsyncioTestCase):
             right.go_to_line(medium - 1)
             await pilot.press("$")
             self.assertEqual(right.scroll_x, 0)
+
+    async def test_ctrl_a_and_ctrl_e_alias_line_edges(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            right = self.app.query_one("#detail-list", RowView)
+            right.focus()
+            long = next(
+                i for i, (text, _) in enumerate(self.app._pretty_lines) if '"long":' in text
+            )
+            right.go_to_line(long)
+            await pilot.pause()
+            await pilot.press("ctrl+e")
+            width = cell_len(self.app._pretty_lines[long][0])
+            self.assertEqual(right.scroll_x, width - right.scrollable_content_region.width)
+            await pilot.press("ctrl+a")
+            self.assertEqual(right.scroll_x, 0)
+
+            value = "x " * 1000 + "\nsecond"
+            self.app.push_screen(StringModal(value))
+            await pilot.pause()
+            view = self.app.screen.query_one(StringView)
+            await pilot.press("$")
+            end = view.scroll_y
+            self.assertGreater(end, 0)
+            await pilot.press("0", "ctrl+e")
+            self.assertEqual(view.scroll_y, end)
+            self.assertEqual(view.selection.end, (0, 0))
+            await pilot.press("ctrl+a")
+            self.assertEqual(view.scroll_y, 0)
+
+            # Text entry keeps its own Ctrl+A / Ctrl+E.
+            await pilot.press("/", *"abc", "ctrl+a")
+            search = self.app.screen.query_one(SearchBar).query_one(Input)
+            self.assertEqual(search.cursor_position, 0)
+            await pilot.press("ctrl+e")
+            self.assertEqual(search.cursor_position, 3)
+
+    async def test_help_opens_from_panels_inspector_and_search(self):
+        async with self.app.run_test() as pilot:
+            left = self.app.query_one("#lines-list", RowView)
+            await pilot.press("f1")
+            self.assertIsInstance(self.app.screen, HelpModal)
+            await pilot.pause()
+            shortcuts = self.app.screen.query_one("#help").query_one(Static)
+            self.assertGreater(shortcuts.size.width, 0)
+            self.assertGreaterEqual(shortcuts.size.height, len(SHORTCUTS))
+            await pilot.press("escape")
+            self.assertNotIsInstance(self.app.screen, HelpModal)
+            self.assertIs(self.app.focused, left)
+            await pilot.press("f1", "f1")
+            self.assertNotIsInstance(self.app.screen, HelpModal)
+
+            self.app.push_screen(StringModal("text"))
+            await pilot.pause()
+            view = self.app.screen.query_one(StringView)
+            await pilot.press("backspace")
+            self.assertIsInstance(self.app.screen, StringModal)
+            await pilot.press("f1")
+            self.assertIsInstance(self.app.screen, HelpModal)
+            await pilot.press("escape")
+            self.assertIs(self.app.focused, view)
+
+            await pilot.press("/", *"ab", "backspace")
+            search = self.app.screen.query_one(SearchBar).query_one(Input)
+            self.assertEqual(search.value, "a")
+            await pilot.press("f1")
+            self.assertIsInstance(self.app.screen, HelpModal)
+            await pilot.press("escape")
+            self.assertIs(self.app.focused, search)
 
     async def test_search_enter_restores_panel_focus_for_n_and_N(self):
         async with self.app.run_test() as pilot:
