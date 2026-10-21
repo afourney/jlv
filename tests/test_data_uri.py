@@ -19,6 +19,13 @@ from jlv.source import JsonlFile
 PNG = b"\x89PNG\r\n\x1a\n" + b"\0" * 32
 
 
+async def wait_for_rings(bells: list[int], count: int, timeout: float = 5.0) -> None:
+    """Native opening rings from a background thread, after the key press returns."""
+    async with asyncio.timeout(timeout):
+        while len(bells) < count:
+            await asyncio.sleep(0.01)
+
+
 class DataURITests(unittest.TestCase):
     def uri(self, value):
         uri = DataURI.parse(value)
@@ -415,6 +422,7 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                     with patch("jlv.data_uri.subprocess.Popen", return_value=child):
                         async with app.run_test(size=(100, 30)) as pilot:
                             await pilot.press("tab", ">")
+                            await wait_for_rings(bells, 1)
                             await pilot.pause()
                             self.assertEqual(bells, [1])
 
@@ -435,6 +443,7 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                         self.assertTrue(app.query_one("#hint-rack").display)
                         spawn.assert_not_called()
                         await pilot.press(">")
+                        await wait_for_rings(bells, 1)
                         await pilot.pause()
                         self.assertEqual(bells, [1])
                         self.assertEqual(app._decoded, [])
@@ -444,6 +453,7 @@ class PreviewAppTests(unittest.IsolatedAsyncioTestCase):
                             "Press > to open natively",
                         )
                         await pilot.press(">")
+                        await wait_for_rings(bells, 2)
                         await pilot.pause()
                         self.assertEqual(bells, [1, 1])
                         temp = app._native_preview.directory

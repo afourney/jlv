@@ -370,7 +370,10 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                 await pilot.press("x")
                 self.assertEqual(inspector.text, value)
                 if len(value) > 1000:
+                    # The cursorless inspector animates Home/End scrolls, and a slow runner
+                    # can start the animation after press() has stopped waiting for it.
                     await pilot.press("end")
+                    await pilot.wait_for_scheduled_animations()
                     self.assertGreater(inspector.scroll_y, 0)
                     await pilot.resize_terminal(80, 24)
                     # TextArea re-scrolls to the cursor after the resize refresh; let that
@@ -378,6 +381,7 @@ class InteractionTests(unittest.IsolatedAsyncioTestCase):
                     await pilot.pause()
                     self.assertEqual(inspector.text, value)
                     await pilot.press("home")
+                    await pilot.wait_for_scheduled_animations()
                     self.assertEqual(inspector.scroll_y, 0)
                 await pilot.press("escape")
                 self.assertNotIsInstance(self.app.screen, StringModal)
