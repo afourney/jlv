@@ -273,6 +273,37 @@ class VimTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+e")
             self.assertEqual(search.cursor_position, 3)
 
+    async def test_single_record_files_start_collapsed(self):
+        value = {"a": [1, 2], "b": {"c": "needle"}}
+        cases = [
+            ("formatted.json", json.dumps(value, indent=2), True),
+            ("one.jsonl", json.dumps(value) + "\n", True),
+            # A single record larger than the initial batch is only known once indexing ends.
+            ("large.jsonl", json.dumps({"x": "y" * 300_000}) + "\n", True),
+            ("two.jsonl", json.dumps(value) + "\n" + json.dumps(value) + "\n", False),
+        ]
+        for name, content, collapsed in cases:
+            with self.subTest(name=name):
+                path = Path(self.directory.name) / name
+                path.write_text(content)
+                source = JsonlFile(path, eager=False)
+                self.addCleanup(source.close)
+                app = JlvApp(source)
+                async with app.run_test(size=(100, 30)) as pilot:
+                    left = app.query_one("#lines-list", RowView)
+                    # The app hides the indexing status once it has seen indexing finish.
+                    async with asyncio.timeout(5):
+                        while app.query_one("#index-status").display:
+                            await pilot.pause(0.05)
+                    await pilot.pause()
+                    self.assertIs(app._records_collapsed, collapsed)
+                    self.assertEqual(left.size.width == 6, collapsed)
+                    if name == "formatted.json":
+                        self.assertEqual(app._pretty_lines[0][0], "{")
+                        self.assertIs(app.focused, left)
+                        await pilot.press("ctrl+b")
+                        self.assertGreater(left.size.width, 30)
+
     async def test_record_list_collapses_to_record_numbers(self):
         async with self.app.run_test(size=(100, 30)) as pilot:
             left = self.app.query_one("#lines-list", RowView)

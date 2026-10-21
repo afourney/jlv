@@ -35,8 +35,20 @@ def _has_many_containers(raw: bytes) -> bool:
     return False
 
 
+def _continues_past_line(text: str, error: ValueError | RecursionError) -> bool:
+    """Whether a first line is valid as far as it goes, like the start of formatted JSON."""
+    return (
+        text[:1] in ("{", "[")
+        and isinstance(error, json.JSONDecodeError)
+        and error.pos >= len(text)
+    )
+
+
 class JsonlFile:
-    """Incrementally validated JSONL with bounded previews and a byte-offset index."""
+    """Incrementally validated JSONL with bounded previews and a byte-offset index.
+
+    A file of formatted JSON, rather than JSONL, is indexed as a single record.
+    """
 
     def __init__(self, path: str | Path, *, eager: bool = True) -> None:
         self.path = os.path.abspath(path)
@@ -51,6 +63,8 @@ class JsonlFile:
         self.scanned_bytes = 0
         self.complete = False
         self.error: str | None = None
+        # The whole file is one JSON value spanning lines, so previews collapse whitespace.
+        self.whole_file = False
         try:
             if not stat.S_ISREG(os.fstat(self._file.fileno()).st_mode):
                 with self._file as stream:
@@ -119,7 +133,13 @@ class JsonlFile:
                 try:
                     decoder.decode(text)
                 except (ValueError, RecursionError) as error:
-                    raise ValueError(f"line {line_number} is not valid JSON: {error}") from error
+                    if line_number != 1 or not _continues_past_line(text, error):
+                        raise ValueError(
+                            f"line {line_number} is not valid JSON: {error}"
+                        ) from error
+                    text = self._whole_file_text(decoder)
+                    offset = self.scanned_bytes = self.file_size
+                    self.whole_file = True
             preview = self._preview_text(text, line_number)
             width = len(preview)
             if not preview.isascii() or "\x7f" in preview:
@@ -137,6 +157,8 @@ class JsonlFile:
             self.preview_width = max(self.preview_width, width)
             self.offsets.append(offset)
             yield
+            if self.whole_file:
+                break
         if not self._cancelled.is_set():
             if not len(self):
                 raise ValueError("file is empty")
@@ -163,6 +185,26 @@ class JsonlFile:
             self.error = str(error)
         finally:
             self._records.close()
+
+    def _whole_file_text(self, decoder: json.JSONDecoder) -> str:
+        """Validate the whole file as one JSON value; return its text for the preview."""
+        with self._read_lock:
+            self._file.seek(0)
+            raw = self._file.read()
+        try:
+            text = raw.decode("utf-8").strip()
+        except UnicodeDecodeError as error:
+            raise ValueError(f"file is not valid UTF-8: {error}") from error
+        try:
+            decoder.decode(text)
+        except (ValueError, RecursionError) as error:
+            raise ValueError(f"file is not valid JSONL or JSON: {error}") from error
+        return self._collapse(text)
+
+    @staticmethod
+    def _collapse(text: str) -> str:
+        # Enough formatted text for a 1,000-character single-line preview.
+        return " ".join(text[:65536].split())
 
     @staticmethod
     def _preview_text(text: str, line_number: int) -> str:
@@ -210,7 +252,10 @@ class JsonlFile:
         if index in self._previews:
             self._previews.move_to_end(index)
             return self._previews[index]
-        text = self._preview_text(self.raw(index).strip(), index + 1)
+        text = self.raw(index).strip()
+        if self.whole_file:
+            text = self._collapse(text)
+        text = self._preview_text(text, index + 1)
         self._previews[index] = text
         if len(self._previews) > 256:
             self._previews.popitem(last=False)

@@ -41,6 +41,11 @@ shows a bright row highlight; the record list keeps a dimmed highlight on the
 selected record while the JSON preview has focus. Select a string
 to read its decoded contents in a scrollable, word-wrapped inspector.
 
+Ordinary formatted JSON files open too, as a single record: when the first line
+is the unfinished start of an object or array, JLV parses the whole file as one
+JSON value. Files with only one record start with the record list collapsed to
+its record number; press Ctrl+B or `z` to expand it.
+
 ## Screenshots
 
 Browse records alongside their formatted JSON:

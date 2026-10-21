@@ -760,6 +760,8 @@ class JlvApp(App):
         self._pending_g: RowView | StringView | None = None
         self._index_timer: Timer | None = None
         self._records_collapsed = False
+        # Once toggled, the record list keeps its size even if it turns out to hold one record.
+        self._records_toggled = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
@@ -1001,8 +1003,15 @@ class JlvApp(App):
         return super().check_action(action, parameters)
 
     def action_toggle_records(self) -> None:
+        self._records_toggled = True
         self._records_collapsed = not self._records_collapsed
         self._size_records()
+
+    def _collapse_single_record(self) -> None:
+        """A file with one record, such as a formatted JSON file, needs no record list."""
+        if self.source.complete and len(self.source) == 1 and not self._records_toggled:
+            self._records_collapsed = True
+            self._size_records()
 
     def _size_records(self) -> None:
         left = self.screen_stack[0].query_one("#lines-list", RowView)
@@ -1090,6 +1099,7 @@ class JlvApp(App):
         left.end_available = self.source.complete
         left.focus()
         self._update_detail(0)
+        self._collapse_single_record()
         if not self.source.complete:
             self._index_timer = self.set_interval(0.1, self._refresh_index)
             self._refresh_index()
@@ -1111,6 +1121,7 @@ class JlvApp(App):
             status.styles.color = self.get_css_variables()["error"]
         elif complete:
             status.display = False
+            self._collapse_single_record()
         else:
             percent = self.source.scanned_bytes * 100 / max(1, self.source.file_size)
             status.update(f"Indexing: {count:,} records ({percent:.0f}%)")
