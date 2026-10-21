@@ -972,6 +972,9 @@ class JlvApp(App):
                     panel.line_edge(True)
 
     def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if action == "help":
+            # Script completion dismisses the top screen, so keep its dialog on top.
+            return not isinstance(self.screen, ScriptRunning)
         if action == "inspect_search_line":
             return (
                 isinstance(self.focused, RowView)
