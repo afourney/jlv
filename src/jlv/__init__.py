@@ -345,13 +345,14 @@ class StringModal(ModalScreen[None]):
         self._next: tuple[str, object] | None = None
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="inspector"):
+        with Vertical(id="inspector") as inspector:
+            # Set before mounting, so the title is present as soon as the screen is.
+            if self._border_title:
+                inspector.border_title = self._border_title
             yield StringView(self.value)
             yield SearchBar(1, self._search_text, self._search_origin, "this string")
 
     def on_mount(self) -> None:
-        if self._border_title:
-            self.query_one("#inspector").border_title = self._border_title
         # Decoding huge strings is slow; let the loading placeholder paint first.
         self.call_after_refresh(self._update_hint)
 
