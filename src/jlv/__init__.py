@@ -610,6 +610,7 @@ SHORTCUTS = [
     ("Page Up / Page Down", "Move by a page"),
     ("Home / End, gg / G", "Move to the first / last row"),
     ("Tab / Shift+Tab", "Switch panels"),
+    ("Ctrl+B, z", "Collapse / expand the record list"),
     ("Left / Right, h / l", "Scroll horizontally where available"),
     ("0 / $, Ctrl+A / Ctrl+E", "Reveal the start / end of the current line"),
     ("[ / ]", "Navigate object/array block starts in the JSON preview"),
@@ -689,6 +690,7 @@ class JlvApp(App):
         Binding("escape", "close_search", "Close search", priority=True),
         Binding("enter", "inspect_search_line", show=False, priority=True),
         Binding("f1", "help", "Help", priority=True),
+        Binding("ctrl+b", "toggle_records", "Collapse records"),
     ]
     DEFAULT_CSS = """
     Horizontal {
@@ -757,6 +759,7 @@ class JlvApp(App):
         self._input_target: RowView | StringView | None = None
         self._pending_g: RowView | StringView | None = None
         self._index_timer: Timer | None = None
+        self._records_collapsed = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
@@ -920,6 +923,8 @@ class JlvApp(App):
             panel.scroll_relative(x=-3 if key == "h" else 3, animate=False)
         elif key in {"0", "$"}:
             panel.line_edge(key == "$")
+        elif key == "z" and isinstance(panel, RowView):
+            self.action_toggle_records()
         elif key in {"/", "?"}:
             self._remember_input_target()
             self.screen.query_one(SearchBar).open(vim=True)
@@ -976,6 +981,8 @@ class JlvApp(App):
         if action == "help":
             # Script completion dismisses the top screen, so keep its dialog on top.
             return not isinstance(self.screen, ScriptRunning)
+        if action == "toggle_records":
+            return self.screen is self.screen_stack[0]
         if action == "inspect_search_line":
             return (
                 isinstance(self.focused, RowView)
@@ -992,6 +999,19 @@ class JlvApp(App):
         }:
             return bool(self.screen.query(SearchBar))
         return super().check_action(action, parameters)
+
+    def action_toggle_records(self) -> None:
+        self._records_collapsed = not self._records_collapsed
+        self._size_records()
+
+    def _size_records(self) -> None:
+        left = self.screen_stack[0].query_one("#lines-list", RowView)
+        if self._records_collapsed:
+            # Keep just the right-aligned record numbers, plus the scrollbar.
+            left.styles.width = max(5, len(str(len(self.source)))) + 1
+            left.scroll_to(x=0, animate=False)
+        else:
+            left.styles.width = None
 
     def action_help(self) -> None:
         if isinstance(self.screen, HelpModal):
@@ -1082,6 +1102,8 @@ class JlvApp(App):
         count, width = len(self.source), self.source.preview_width
         if left.row_count != count or left.virtual_size.width != width:
             left.extend_rows(count, width)
+            if self._records_collapsed:
+                self._size_records()
         left.end_available = complete
         status = screen.query_one("#index-status", Static)
         if error is not None:

@@ -47,6 +47,7 @@ class PanelKey(Message):
             ">",
             "<",
             "|",
+            "z",
         }:
             event.stop()
             event.prevent_default()

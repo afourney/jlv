@@ -59,6 +59,7 @@ Open a string to read its decoded, word-wrapped contents:
 | Page Up / Page Down | Move by a page |
 | Home / End, gg / G | Move to the first / last row |
 | Tab / Shift+Tab | Switch panels |
+| Ctrl+B, z | Collapse the record list to its record numbers, or expand it again |
 | Left / Right, h / l | Scroll horizontally where available |
 | 0 / $, Ctrl+A / Ctrl+E | Reveal the start / end of the current line |
 | [ / ] | Navigate object/array block starts in the JSON preview |

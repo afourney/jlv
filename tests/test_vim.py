@@ -273,6 +273,43 @@ class VimTests(unittest.IsolatedAsyncioTestCase):
             await pilot.press("ctrl+e")
             self.assertEqual(search.cursor_position, 3)
 
+    async def test_record_list_collapses_to_record_numbers(self):
+        async with self.app.run_test(size=(100, 30)) as pilot:
+            left = self.app.query_one("#lines-list", RowView)
+            right = self.app.query_one("#detail-list", RowView)
+            normal = left.size.width
+            self.assertGreater(normal, 30)
+            left.scroll_to(x=10, animate=False)
+            await pilot.press("z")
+            self.assertEqual(left.size.width, 6)
+            self.assertEqual(left.scroll_x, 0)
+            self.assertEqual(left.render_line(0).text.strip(), "1")
+            self.assertGreater(right.size.width, 90)
+            await pilot.press("z")
+            self.assertEqual(left.size.width, normal)
+
+            await pilot.press("tab", "ctrl+b")
+            self.assertIs(self.app.focused, right)
+            self.assertEqual(left.size.width, 6)
+            await pilot.press("ctrl+b")
+            self.assertEqual(left.size.width, normal)
+
+            # Searching for "z" doesn't collapse; Ctrl+B still does.
+            await pilot.press("/", "z")
+            search = self.app.screen.query_one(SearchBar).query_one(Input)
+            self.assertEqual(search.value, "z")
+            self.assertEqual(left.size.width, normal)
+            await pilot.press("ctrl+b")
+            self.assertEqual(left.size.width, 6)
+            await pilot.press("ctrl+b", "escape")
+
+            self.app.push_screen(StringModal("text"))
+            await pilot.pause()
+            await pilot.press("z", "ctrl+b")
+            self.app.pop_screen()
+            await pilot.pause()
+            self.assertEqual(left.size.width, normal)
+
     async def test_help_opens_from_panels_inspector_and_search(self):
         async with self.app.run_test() as pilot:
             left = self.app.query_one("#lines-list", RowView)
