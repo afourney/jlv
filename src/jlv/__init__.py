@@ -610,6 +610,7 @@ SHORTCUTS = [
     ("Page Up / Page Down", "Move by a page"),
     ("Home / End, gg / G", "Move to the first / last row"),
     ("Tab / Shift+Tab", "Switch panels"),
+    ("Ctrl+B, z", "Collapse / expand the record list"),
     ("Left / Right, h / l", "Scroll horizontally where available"),
     ("0 / $, Ctrl+A / Ctrl+E", "Reveal the start / end of the current line"),
     ("[ / ]", "Navigate object/array block starts in the JSON preview"),
@@ -689,6 +690,7 @@ class JlvApp(App):
         Binding("escape", "close_search", "Close search", priority=True),
         Binding("enter", "inspect_search_line", show=False, priority=True),
         Binding("f1", "help", "Help", priority=True),
+        Binding("ctrl+b", "toggle_records", "Collapse records"),
     ]
     DEFAULT_CSS = """
     Horizontal {
@@ -757,6 +759,9 @@ class JlvApp(App):
         self._input_target: RowView | StringView | None = None
         self._pending_g: RowView | StringView | None = None
         self._index_timer: Timer | None = None
+        self._records_collapsed = False
+        # Once toggled, the record list keeps its size even if it turns out to hold one record.
+        self._records_toggled = False
 
     def compose(self) -> ComposeResult:
         with Horizontal(id="panels"):
@@ -920,6 +925,8 @@ class JlvApp(App):
             panel.scroll_relative(x=-3 if key == "h" else 3, animate=False)
         elif key in {"0", "$"}:
             panel.line_edge(key == "$")
+        elif key == "z" and isinstance(panel, RowView):
+            self.action_toggle_records()
         elif key in {"/", "?"}:
             self._remember_input_target()
             self.screen.query_one(SearchBar).open(vim=True)
@@ -976,6 +983,8 @@ class JlvApp(App):
         if action == "help":
             # Script completion dismisses the top screen, so keep its dialog on top.
             return not isinstance(self.screen, ScriptRunning)
+        if action == "toggle_records":
+            return self.screen is self.screen_stack[0]
         if action == "inspect_search_line":
             return (
                 isinstance(self.focused, RowView)
@@ -992,6 +1001,37 @@ class JlvApp(App):
         }:
             return bool(self.screen.query(SearchBar))
         return super().check_action(action, parameters)
+
+    def action_toggle_records(self) -> None:
+        self._records_toggled = True
+        self._records_collapsed = not self._records_collapsed
+        self._size_records()
+
+    def _collapse_single_record(self) -> None:
+        """A file with one record, such as a formatted JSON file, needs no record list."""
+        if self.source.complete and len(self.source) == 1 and not self._records_toggled:
+            self._records_collapsed = True
+            self._size_records()
+
+    def _record_preview(self, index: int) -> str:
+        if self._records_collapsed:
+            return f"{index + 1:>5}"
+        return self.source.preview(index)
+
+    def _record_width(self) -> int:
+        if self._records_collapsed:
+            return max(5, len(str(len(self.source))))
+        return self.source.preview_width
+
+    def _size_records(self) -> None:
+        left = self.screen_stack[0].query_one("#lines-list", RowView)
+        left.extend_rows(len(self.source), self._record_width())
+        if self._records_collapsed:
+            # Keep just the right-aligned record numbers, plus the scrollbar.
+            left.styles.width = self._record_width() + 1
+            left.scroll_to(x=0, animate=False)
+        else:
+            left.styles.width = None
 
     def action_help(self) -> None:
         if isinstance(self.screen, HelpModal):
@@ -1066,10 +1106,11 @@ class JlvApp(App):
 
     def on_mount(self) -> None:
         left = self.query_one("#lines-list", RowView)
-        left.set_rows(len(self.source), self.source.preview_width, self.source.preview)
+        left.set_rows(len(self.source), self._record_width(), self._record_preview)
         left.end_available = self.source.complete
         left.focus()
         self._update_detail(0)
+        self._collapse_single_record()
         if not self.source.complete:
             self._index_timer = self.set_interval(0.1, self._refresh_index)
             self._refresh_index()
@@ -1079,9 +1120,11 @@ class JlvApp(App):
         screen = self.screen_stack[0]
         left = screen.query_one("#lines-list", RowView)
         complete, error = self.source.complete, self.source.error
-        count, width = len(self.source), self.source.preview_width
+        count, width = len(self.source), self._record_width()
         if left.row_count != count or left.virtual_size.width != width:
             left.extend_rows(count, width)
+            if self._records_collapsed:
+                self._size_records()
         left.end_available = complete
         status = screen.query_one("#index-status", Static)
         if error is not None:
@@ -1089,6 +1132,7 @@ class JlvApp(App):
             status.styles.color = self.get_css_variables()["error"]
         elif complete:
             status.display = False
+            self._collapse_single_record()
         else:
             percent = self.source.scanned_bytes * 100 / max(1, self.source.file_size)
             status.update(f"Indexing: {count:,} records ({percent:.0f}%)")
@@ -1100,7 +1144,7 @@ class JlvApp(App):
             self.notify(reason, title="End of file unavailable", severity="warning")
         else:
             left = self.screen_stack[0].query_one("#lines-list", RowView)
-            left.extend_rows(len(self.source), self.source.preview_width)
+            left.extend_rows(len(self.source), self._record_width())
             left.end_available = True
             left.action_cursor_end()
         event.stop()

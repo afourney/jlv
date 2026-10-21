@@ -61,6 +61,49 @@ class SourceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, error):
                     JsonlFile(self.path)
 
+    def test_formatted_json_is_one_record(self):
+        for value in [{"a": [1, {"b": "日本語"}], "c": None}, [1, [2, 3], {}], [[]]]:
+            with self.subTest(value=value):
+                source = self.source(json.dumps(value, indent=2, ensure_ascii=False).encode())
+                self.assertTrue(source.complete)
+                self.assertTrue(source.whole_file)
+                self.assertEqual(len(source), 1)
+                self.assertEqual(source.value(0), value)
+                compact = " ".join(json.dumps(value, indent=2, ensure_ascii=False).split())
+                self.assertEqual(source.preview(0), "    1  " + compact)
+                self.assertEqual(source.preview_width, cell_len(source.preview(0)))
+
+    def test_formatted_preview_preserves_json_tokens(self):
+        tokens = (
+            r'"two  spaces": "left  right", "escaped": "quote: \"  slash: \\", '
+            '"unicode": "a\u00a0\u2003b", '
+            r'"escape": "\u0020", "number": -0.00e+02, "dup": 1, "dup": 2'
+        )
+        source = self.source(("{\n\t" + tokens + "\n}\n").encode())
+        self.assertEqual(source.preview(0), "    1  { " + tokens + " }")
+        self.assertEqual(json.loads(source.preview(0)[7:]), source.value(0))
+        self.assertEqual(source.preview_width, cell_len(source.preview(0)))
+
+    def test_formatted_preview_limit_counts_output_not_indentation(self):
+        source = self.source(b"{\n" + b" " * 70_000 + b'"text": "' + b"x" * 1200 + b'"\n}')
+        self.assertEqual(source.preview(0), "    1  " + ('{ "text": "' + "x" * 1200)[:1000] + "...")
+        self.assertEqual(source.value(0), {"text": "x" * 1200})
+
+    def test_formatted_json_errors(self):
+        for content, error in [
+            # Recognized as formatted JSON, so the error locates it within the whole file.
+            (b'{\n  "a": 1,\n  "b": [2,\n}\n', "file is not valid JSONL or JSON: .* line 4"),
+            (b'[\n  "\xff"\n]\n', "file is not valid UTF-8"),
+            # Not plausibly the start of formatted JSON: the first line is just invalid.
+            (b'{x\n  "a": 1\n}\n', "line 1 is not valid JSON"),
+            (b"{}\n{\n}\n", "line 2 is not valid JSON"),
+            (b"abc\n", "line 1 is not valid JSON"),
+        ]:
+            with self.subTest(content=content):
+                self.path.write_bytes(content)
+                with self.assertRaisesRegex(ValueError, error):
+                    JsonlFile(self.path)
+
     def test_universal_newlines_and_trimmed_unicode_whitespace(self):
         source = self.source('\u00a0{"a":1}\u00a0\r[2]\r\ntrue\n\r'.encode())
         self.assertEqual(len(source), 3)
