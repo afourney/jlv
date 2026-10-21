@@ -13,6 +13,7 @@ from pathlib import Path
 
 from jlv import (
     NO_DATA,
+    HelpModal,
     JlvApp,
     PrettyDocument,
     ScriptPicker,
@@ -26,6 +27,7 @@ from jlv.scripts import (
     KILL_GRACE,
     Completed,
     Script,
+    ScriptResult,
     Selection,
     execute,
     json_pointer,
@@ -557,6 +559,49 @@ class ScriptAppTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("Exit status: 3", self.app.screen.value)
             self.assertIn("bad input", self.app.screen.value)
 
+    async def check_help_during_script(self, mime: str, content: object):
+        self.configure('[[script]]\nname = "Example"\ncommand = ["unused"]\n')
+        finish = asyncio.Event()
+
+        async def complete(script, selection):
+            await finish.wait()
+            return ScriptResult("Example", mime, content, False)
+
+        with unittest.mock.patch("jlv.execute", side_effect=complete):
+            async with self.app.run_test(size=(100, 30)) as pilot:
+                base = self.app.screen
+                await pilot.press("|", "enter")
+                running = self.app.screen
+                self.assertIsInstance(running, ScriptRunning)
+                await pilot.press("f1")
+                self.assertIs(self.app.screen, running)
+
+                finish.set()
+                await self.wait_for(pilot, lambda: running.worker.is_finished)
+                self.assertNotIn(running, self.app.screen_stack)
+                if mime == "application/json":
+                    self.assertIs(self.app.screen, base)
+                    self.assertEqual(self.app._document.value, content)
+                else:
+                    self.assertIsInstance(self.app.screen, StringModal)
+                    self.assertEqual(self.app.screen.value, content)
+
+                # Help becomes available again on either kind of result.
+                result_screen = self.app.screen
+                await pilot.press("f1")
+                self.assertIsInstance(self.app.screen, HelpModal)
+                await pilot.press("escape")
+                self.assertIs(self.app.screen, result_screen)
+                if mime != "application/json":
+                    await pilot.press("escape")
+                    self.assertIs(self.app.screen, base)
+
+    async def test_help_during_script_with_json_result(self):
+        await self.check_help_during_script("application/json", {"result": 2})
+
+    async def test_help_during_script_with_text_result(self):
+        await self.check_help_during_script("text/plain", "done")
+
     async def test_escape_cancels_running_script(self):
         pid_file = self.directory / "pid"
         slow = python_script(
@@ -571,6 +616,8 @@ class ScriptAppTests(unittest.IsolatedAsyncioTestCase):
             await self.wait_for(pilot, lambda: isinstance(self.app.screen, ScriptRunning))
             await self.wait_for(pilot, lambda: pid_file.exists() and pid_file.read_text())
             worker = self.app.screen.worker
+            await pilot.press("f1")
+            self.assertIsInstance(self.app.screen, ScriptRunning)
             await pilot.press("escape")
             await self.wait_for(pilot, lambda: worker.is_finished)
             self.assertNotIsInstance(self.app.screen, (ScriptRunning, StringModal))

@@ -60,7 +60,7 @@ Open a string to read its decoded, word-wrapped contents:
 | Home / End, gg / G | Move to the first / last row |
 | Tab / Shift+Tab | Switch panels |
 | Left / Right, h / l | Scroll horizontally where available |
-| 0 / $ | Reveal the start / end of the current line |
+| 0 / $, Ctrl+A / Ctrl+E | Reveal the start / end of the current line |
 | [ / ] | Navigate object/array block starts in the JSON preview |
 | % | Jump between matching object/array delimiters in the JSON preview |
 | Enter | Drill down: from the record list into the JSON preview, then into a selected string |
@@ -76,6 +76,7 @@ Open a string to read its decoded, word-wrapped contents:
 | :number then Enter | Jump to a 1-based line in the originating panel |
 | :q then Enter | Close the string inspector, or quit from a main panel |
 | Alt+R / Alt+C | Toggle Regex / Match case while search is open |
+| F1 | Show keyboard shortcuts |
 | Escape | Back out one level: close search, then the string inspector, then move from the JSON preview to the record list |
 
 The inspector is read-only and supports text selection and Ctrl+C to copy.
